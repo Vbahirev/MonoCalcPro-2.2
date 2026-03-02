@@ -672,8 +672,9 @@ const saveFullDatabase = async () => {
                 const date = raw.date || raw.savedAt || null;
 
                 return {
-                    id: d.id,
                     ...raw,
+                    id: d.id,
+                    projectId: raw?.id || d.id,
                     name: name || 'Без названия',
                     client,
                     date
@@ -723,8 +724,24 @@ const saveFullDatabase = async () => {
             const { uid } = requireUser();
             if (!id) throw new Error('Нет ID проекта');
 
-            const fromRef = historyDocRef(uid, id);
-            const snap = await getDoc(fromRef);
+            let fromRef = historyDocRef(uid, id);
+            let snap = await getDoc(fromRef);
+
+            // Backward compatibility:
+            // if caller passed legacy payload id (stored field), find real Firestore doc id.
+            if (!snap.exists()) {
+                const byFieldQ = query(
+                    historyCollectionRef(uid),
+                    where('id', '==', id),
+                    fsLimit(1)
+                );
+                const byFieldSnap = await getDocs(byFieldQ);
+                if (!byFieldSnap.empty) {
+                    fromRef = byFieldSnap.docs[0].ref;
+                    snap = byFieldSnap.docs[0];
+                }
+            }
+
             if (!snap.exists()) return { status: 'error', message: 'Проект не найден' };
 
             const data = snap.data();
@@ -756,7 +773,10 @@ const saveFullDatabase = async () => {
 
             const snap = await getDocs(trashCollectionRef(uid));
             const trash = [];
-            snap.forEach((d) => trash.push({ id: d.id, ...d.data() }));
+            snap.forEach((d) => {
+                const raw = d.data() || {};
+                trash.push({ ...raw, id: d.id, trashId: raw?.id || d.id });
+            });
 
             // фильтрация: последние ~31 день
             const cutoff = Date.now() - 31 * 24 * 60 * 60 * 1000;
