@@ -297,7 +297,8 @@ watch(project, () => {
         if (!hasPermission('canSaveHistory')) throw new Error('Недостаточно прав для сохранения истории');
         const finalNameRaw = nameOverride || project.value.name;
         const finalName = sanitizeText(finalNameRaw);
-        project.value.client = sanitizeText(project.value.client);
+        const finalClient = sanitizeText(project.value.client);
+        project.value.client = finalClient;
         if (!finalName) throw new Error("Введите название проекта");
         project.value.name = finalName;
         if (!currentProjectId.value) {
@@ -307,11 +308,13 @@ watch(project, () => {
         const payload = {
             id: currentProjectId.value,
             name: finalName,
+            client: finalClient,
+            date: new Date().toISOString(),
             total: totals.value.total,
             state: getFullState()
         };
 
-        const result = await saveCloudHistory(payload, pwd);
+        const result = await saveCloudHistory(payload);
         if (result && result.status === 'error') throw new Error(result.message);
         return result;
     };
@@ -348,7 +351,7 @@ watch(project, () => {
     };
     
     const deleteFromHistory = async (id) => {
-        const result = await deleteCloudHistory(id, pwd);
+        const result = await deleteCloudHistory(id);
         if (result && result.status === 'error') throw new Error(result.message);
         if (currentProjectId.value === id) currentProjectId.value = null;
         return result;

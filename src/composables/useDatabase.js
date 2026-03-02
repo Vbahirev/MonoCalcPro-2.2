@@ -332,17 +332,14 @@ export function useDatabase() {
                 syncStatus.value = 'idle';
             }
             setTimeout(() => { if(syncStatus.value === 'success') syncStatus.value = 'idle'; }, 2000);
-        }, (error) => {
-            console.error("Ошибка настроек:", error);
-            syncStatus.value = 'error';
         }, (err) => {
-            /* onSnapshot settings error */
             if (err?.code === 'permission-denied') {
                 console.warn('[DB] settings listen denied (expected for limited roles)');
                 syncStatus.value = 'idle';
                 return;
             }
-            console.error('[DB] settings listen error:', err);
+            console.error('Ошибка настроек:', err);
+            syncStatus.value = 'error';
         });
     };
 
@@ -667,7 +664,21 @@ const saveFullDatabase = async () => {
                 : query(historyCollectionRef(uid), ...base);
 
             const snap = await getDocs(q);
-            const items = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+            const items = snap.docs.map(d => {
+                const raw = d.data() || {};
+                const stateProject = raw?.state?.project || {};
+                const name = (raw.name || stateProject.name || '').toString().trim();
+                const client = (raw.client || stateProject.client || '').toString().trim();
+                const date = raw.date || raw.savedAt || null;
+
+                return {
+                    id: d.id,
+                    ...raw,
+                    name: name || 'Без названия',
+                    client,
+                    date
+                };
+            });
 
             const last = snap.docs.length ? snap.docs[snap.docs.length - 1] : null;
 
@@ -686,9 +697,17 @@ const saveFullDatabase = async () => {
             const { uid } = requireUser();
             if (!projectData?.id) throw new Error('Нет ID проекта');
 
+            const stateProject = projectData?.state?.project || {};
+            const normalizedName = (projectData.name || stateProject.name || '').toString().trim();
+            const normalizedClient = (projectData.client || stateProject.client || '').toString().trim();
+            const nowIso = new Date().toISOString();
+
             const dataToSave = {
                 ...projectData,
-                savedAt: new Date().toISOString()
+                name: normalizedName || 'Без названия',
+                client: normalizedClient,
+                date: projectData?.date || nowIso,
+                savedAt: nowIso
             };
 
             await setDoc(historyDocRef(uid, projectData.id), dataToSave, { merge: true });
@@ -883,6 +902,12 @@ const saveFullDatabase = async () => {
                 id: doc.id,
                 ...doc.data()
             }));
+        }, (err) => {
+            if (err?.code === 'permission-denied') {
+                console.warn('[DB] history listen denied');
+                return;
+            }
+            console.error('[DB] history listen error:', err);
         });
     };
 

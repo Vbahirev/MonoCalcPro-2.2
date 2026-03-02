@@ -2,15 +2,13 @@
 import { ref } from 'vue';
 import { auth } from '@/services/firebase';
 import { 
-    signInWithEmailAndPassword, 
     GoogleAuthProvider, 
-    signInWithPopup 
+    signInWithPopup,
+    signInWithRedirect
 } from 'firebase/auth';
 
 const emit = defineEmits(['close', 'success']);
 
-const email = ref('');
-const password = ref('');
 const isLoading = ref(false);
 const errorMsg = ref('');
 
@@ -24,26 +22,57 @@ const performLogin = async (method) => {
         emit('success');
         emit('close');
     } catch (e) {
-        if (e.code === 'auth/wrong-password' || e.code === 'auth/user-not-found') {
-             errorMsg.value = 'Неверный email или пароль';
+        if (
+            e.code === 'auth/wrong-password' ||
+            e.code === 'auth/user-not-found' ||
+            e.code === 'auth/invalid-credential' ||
+            e.code === 'auth/invalid-login-credentials'
+        ) {
+            errorMsg.value = 'Неверный email или пароль';
+        } else if (e.code === 'auth/operation-not-allowed') {
+            errorMsg.value = 'Email/Password вход отключён в Firebase Authentication';
         } else if (e.code === 'auth/popup-closed-by-user') {
-             errorMsg.value = ''; // Пользователь просто закрыл окно
+            errorMsg.value = ''; // Пользователь просто закрыл окно
+        } else if (e.code === 'auth/too-many-requests') {
+            errorMsg.value = 'Слишком много попыток входа. Попробуйте позже';
         } else {
-             errorMsg.value = 'Ошибка входа: ' + e.message;
+            errorMsg.value = 'Ошибка входа: ' + (e?.message || e?.code || 'неизвестная ошибка');
         }
     } finally {
         isLoading.value = false;
     }
 };
 
-const handleLogin = async () => {
-    if (!email.value || !password.value) return;
-    performLogin(() => signInWithEmailAndPassword(auth, email.value, password.value));
-};
-
 const handleGoogleLogin = async () => {
     const provider = new GoogleAuthProvider();
-    performLogin(() => signInWithPopup(auth, provider));
+    provider.setCustomParameters({ prompt: 'select_account' });
+
+    isLoading.value = true;
+    errorMsg.value = '';
+    try {
+        await signInWithPopup(auth, provider);
+        emit('success');
+        emit('close');
+    } catch (e) {
+        const isPopupIssue = (
+            e?.code === 'auth/popup-blocked' ||
+            e?.code === 'auth/cancelled-popup-request' ||
+            String(e?.message || '').toLowerCase().includes('cross-origin-opener-policy')
+        );
+
+        if (isPopupIssue) {
+            await signInWithRedirect(auth, provider);
+            return;
+        }
+
+        if (e.code === 'auth/popup-closed-by-user') {
+            errorMsg.value = '';
+        } else {
+            errorMsg.value = 'Ошибка входа: ' + (e?.message || e?.code || 'неизвестная ошибка');
+        }
+    } finally {
+        isLoading.value = false;
+    }
 };
 </script>
 
@@ -65,16 +94,6 @@ const handleGoogleLogin = async () => {
                     <img src="https://www.svgrepo.com/show/475656/google-color.svg" class="w-5 h-5" />
                     <span>Войти через Google</span>
                 </button>
-
-                <div class="relative py-2"><div class="absolute inset-0 flex items-center"><div class="w-full border-t border-gray-200 dark:border-white/10"></div></div><div class="relative flex justify-center"><span class="bg-white dark:bg-[#1C1C1E] px-2 text-[10px] text-gray-400 uppercase font-bold">или email</span></div></div>
-
-                <form @submit.prevent="handleLogin" class="space-y-3">
-                    <input v-model="email" type="email" placeholder="Email" class="w-full h-12 px-4 rounded-xl bg-gray-100 dark:bg-white/5 border-none outline-none text-sm font-bold dark:text-white focus:ring-2 ring-black/10 dark:ring-white/10 transition-all">
-                    <input v-model="password" type="password" placeholder="Пароль" class="w-full h-12 px-4 rounded-xl bg-gray-100 dark:bg-white/5 border-none outline-none text-sm font-bold dark:text-white focus:ring-2 ring-black/10 dark:ring-white/10 transition-all">
-                    <button type="submit" :disabled="isLoading" class="w-full h-12 bg-black dark:bg-white text-white dark:text-black rounded-xl font-bold text-xs uppercase hover:opacity-90 active:scale-[0.98] transition-all shadow-lg">
-                        {{ isLoading ? 'Вход...' : 'Войти' }}
-                    </button>
-                </form>
 
                 <p v-if="errorMsg" class="text-xs text-red-500 text-center font-bold mt-2 bg-red-50 dark:bg-red-900/20 py-2 rounded-lg">{{ errorMsg }}</p>
             </div>

@@ -33,13 +33,15 @@ const {
     addAccessory, removeAccessory, 
     addPackaging, removePackaging,
     addDesign, removeDesign,
+    saveToHistory,
     triggerAutoSave 
 } = useCalculator(typeof props.calculatorId === 'object' ? props.calculatorId.value : props.calculatorId);
 
-const showProjectInfo = ref(false);
+const showSaveProjectModal = ref(false);
 const showResetConfirm = ref(false);
 const showInvoice = ref(false);
 const showAuthModal = ref(false); // <--- Для окна входа
+const isManualSaving = ref(false);
 const activeTab = ref('layers');
 const toast = ref({ show: false, message: '' });
 const reviewedSections = ref({ processing: false, accessories: false, packaging: false, design: false });
@@ -127,6 +129,42 @@ const goBackToHome = () => { router.push('/'); };
 const onLoginSuccess = () => {
     toast.value = { show: true, message: 'Вы успешно вошли' };
     setTimeout(() => toast.value.show = false, 3000);
+};
+
+const openSaveProjectModal = () => {
+    if (!currentUser.value) {
+        showAuthModal.value = true;
+        toast.value = { show: true, message: 'Сначала войдите в аккаунт' };
+        setTimeout(() => { toast.value.show = false; }, 2500);
+        return;
+    }
+    if (!canViewHistory.value) {
+        toast.value = { show: true, message: 'Нет прав для сохранения в историю' };
+        setTimeout(() => { toast.value.show = false; }, 2500);
+        return;
+    }
+    showSaveProjectModal.value = true;
+};
+
+const handleManualSaveToHistory = async () => {
+    if (!canViewHistory.value) {
+        toast.value = { show: true, message: 'Нет прав для сохранения в историю' };
+        setTimeout(() => { toast.value.show = false; }, 2500);
+        return;
+    }
+
+    isManualSaving.value = true;
+    try {
+        await saveToHistory(project.value.name);
+        showSaveProjectModal.value = false;
+        toast.value = { show: true, message: 'Проект сохранён в Историю' };
+        setTimeout(() => { toast.value.show = false; }, 3000);
+    } catch (e) {
+        toast.value = { show: true, message: e?.message || 'Ошибка сохранения' };
+        setTimeout(() => { toast.value.show = false; }, 3000);
+    } finally {
+        isManualSaving.value = false;
+    }
 };
 
 // ... (Хелперы и методы) ...
@@ -226,11 +264,11 @@ const confirmReset = () => { resetAll(); showResetConfirm.value = false; toast.v
             
             <div class="h-8 w-px bg-gray-200 dark:bg-white/10 mx-1 hidden md:block"></div>
             
-            <button @click="showProjectInfo=!showProjectInfo" class="btn-labeled calc-top-nav-btn group" title="Данные проекта">
+            <button @click="openSaveProjectModal" class="btn-labeled calc-top-nav-btn group" title="Сохранить проект">
                 <div class="calc-top-nav-icon p-1.5 rounded-lg transition-all text-gray-600 dark:text-gray-300">
-                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path></svg>
+                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"></path><polyline points="17 21 17 13 7 13 7 21"></polyline><polyline points="7 3 7 8 15 8"></polyline></svg>
                 </div>
-                <span class="hidden md:block">{{ project.name || 'Проект' }}</span>
+                <span class="hidden md:block">Сохранить</span>
             </button>
             
             <template v-if="canViewHistory">
@@ -410,7 +448,7 @@ const confirmReset = () => { resetAll(); showResetConfirm.value = false; toast.v
         </div>
     </div>
 
-    <Transition name="modal-anim"><div v-if="showProjectInfo" class="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4 no-print" @click.self="showProjectInfo=false"><div class="bg-white p-6 rounded-2xl w-full max-w-sm shadow-xl"><h3 class="font-bold text-lg mb-4">Данные проекта</h3><div class="space-y-3"><input v-model="project.name" class="input-std font-bold" placeholder="Название проекта"><input v-model="project.client" class="input-std" placeholder="Имя заказчика"><button @click="showProjectInfo=false" class="w-full bg-black text-white py-3 rounded-xl font-bold mt-2">Готово</button></div></div></div></Transition>
+    <Transition name="modal-anim"><div v-if="showSaveProjectModal" class="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4 no-print" @click.self="showSaveProjectModal=false"><div class="bg-white p-6 rounded-2xl w-full max-w-sm shadow-xl"><h3 class="font-bold text-lg mb-2">Сохранить в историю</h3><p class="text-xs text-gray-500 mb-4">Укажите данные проекта перед сохранением</p><div class="space-y-3"><input v-model="project.name" class="input-std font-bold" placeholder="Название проекта"><input v-model="project.client" class="input-std" placeholder="Заказчик / Организация"><div class="grid grid-cols-2 gap-3 pt-1"><button @click="showSaveProjectModal=false" class="py-3 rounded-xl font-bold bg-gray-100 text-gray-500 hover:bg-gray-200 transition-colors text-xs uppercase tracking-wider">Отмена</button><button @click="handleManualSaveToHistory" :disabled="isManualSaving" class="py-3 rounded-xl font-bold bg-black text-white hover:bg-gray-800 transition-colors text-xs uppercase tracking-wider disabled:opacity-60">{{ isManualSaving ? 'Сохранение...' : 'Сохранить' }}</button></div></div></div></div></Transition>
     <Transition name="modal-anim"><div v-if="showResetConfirm" class="fixed inset-0 z-[100] flex items-center justify-center bg-black/40 backdrop-blur-sm p-4" @click.self="showResetConfirm = false"><div class="bg-white rounded-2xl shadow-2xl p-6 max-w-sm w-full border border-white/50 text-center transform transition-all"><h3 class="text-lg font-black mb-2">Сбросить всё?</h3><p class="text-sm text-gray-500 mb-6">Все введенные данные будут удалены.</p><div class="grid grid-cols-2 gap-3"><button @click="showResetConfirm = false" class="py-3 rounded-xl font-bold bg-gray-100 text-gray-500 hover:bg-gray-200 transition-colors text-xs uppercase tracking-wider">Отмена</button><button @click="confirmReset" class="py-3 rounded-xl font-bold bg-red-500 text-white hover:bg-red-600 shadow-lg shadow-red-500/30 transition-all text-xs uppercase tracking-wider">Сбросить</button></div></div></div></Transition>
     
     <Transition name="modal-anim">
