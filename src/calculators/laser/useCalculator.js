@@ -349,11 +349,27 @@ watch(project, () => {
             return true;
         } catch (e) { return false; }
     };
+
+    const clearDeletedProjectFromStoredState = (deletedId) => {
+        if (!deletedId) return;
+        try {
+            const raw = storage.getItem(USER_DATA_STORAGE_KEY);
+            if (!raw) return;
+            const parsed = JSON.parse(raw);
+            if (parsed?.currentProjectId !== deletedId) return;
+
+            parsed.currentProjectId = null;
+            storage.setItem(USER_DATA_STORAGE_KEY, JSON.stringify(parsed));
+        } catch (e) {
+            // ignore storage parsing issues
+        }
+    };
     
     const deleteFromHistory = async (id) => {
         const result = await deleteCloudHistory(id);
         if (result && result.status === 'error') throw new Error(result.message);
         if (currentProjectId.value === id) currentProjectId.value = null;
+        clearDeletedProjectFromStoredState(id);
         return result;
     };
 
