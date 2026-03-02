@@ -745,15 +745,20 @@ const saveFullDatabase = async () => {
             if (!snap.exists()) return { status: 'error', message: 'Проект не найден' };
 
             const data = snap.data();
-            await setDoc(trashDocRef(uid, id), {
+            const toTrashRef = trashDocRef(uid, id);
+            // /users/{uid}/trash forbids update in rules; recreate doc to keep operation in "create" path.
+            try { await deleteDoc(toTrashRef); } catch (_) {}
+
+            await setDoc(toTrashRef, {
                 itemType: 'projects',
                 ...data,
                 id,
+                sourceHistoryId: id,
                 deletedAt: serverTimestamp(),
                 deletedAtISO: new Date().toISOString(),
                 // ⚠️ НЕ УДАЛЯТЬ: срок хранения корзины (30 дней) — используется для фильтрации/сортировки
                 expiresAtISO: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString()
-            }, { merge: true });
+            });
 
             // ⚠️ НЕ УДАЛЯТЬ: фиксируем событие для плавного вытеснения (~30 дней)
             await writeGarbage(uid, { action: 'history_delete', historyId: id });
@@ -878,9 +883,10 @@ const saveFullDatabase = async () => {
 
             // ===== Восстановление проектов истории (по-умолчанию) =====
             const { deletedAt, deletedAtISO, expiresAtISO, ...rest } = data;
-            await setDoc(historyDocRef(uid, id), {
+            const historyId = rest?.sourceHistoryId || rest?.id || id;
+            await setDoc(historyDocRef(uid, historyId), {
                 ...rest,
-                id,
+                id: historyId,
                 savedAt: rest.savedAt || new Date().toISOString()
             }, { merge: true });
 
