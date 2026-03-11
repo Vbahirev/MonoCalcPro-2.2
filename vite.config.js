@@ -83,10 +83,7 @@ export default defineConfig({
           }
 
           // --- vendor splitting ---
-          if (id.includes('node_modules/firebase/firestore')) return 'firebase-firestore';
-          if (id.includes('node_modules/firebase/auth')) return 'firebase-auth';
-          if (id.includes('node_modules/firebase/app') || id.includes('node_modules/@firebase/app')) return 'firebase-app';
-          if (id.includes('node_modules/firebase') || id.includes('node_modules/@firebase')) return 'firebase-core';
+          if (id.includes('node_modules/firebase') || id.includes('node_modules/@firebase')) return 'firebase-vendor';
           if (id.includes('vue')) return 'vue-vendor';
           if (id.includes('vuedraggable')) return 'drag-vendor';
 

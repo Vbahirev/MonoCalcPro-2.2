@@ -1,5 +1,4 @@
 import { initializeApp } from "firebase/app";
-import { getAnalytics } from "firebase/analytics";
 import {
   getFirestore,
   initializeFirestore,
@@ -85,11 +84,17 @@ const app = initializeApp(firebaseConfig);
 
 // Analytics only in production — not needed in dev/offline PWA
 if (import.meta.env.PROD) {
-  try {
-    getAnalytics(app);
-  } catch {
-    // ignore: can throw in non-browser or restricted contexts
-  }
+  import("firebase/analytics")
+    .then(({ getAnalytics }) => {
+      try {
+        getAnalytics(app);
+      } catch {
+        // ignore: can throw in non-browser or restricted contexts
+      }
+    })
+    .catch(() => {
+      // ignore: analytics is optional for app startup
+    });
 }
 
 let dbInstance;
