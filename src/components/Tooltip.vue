@@ -10,6 +10,7 @@ defineProps({
 const isVisible = ref(false);
 const triggerRef = ref(null);
 const tooltipPos = ref({ top: 0, left: 0 });
+const placement = ref('top');
 
 const show = () => {
     if (!triggerRef.value) return;
@@ -17,9 +18,15 @@ const show = () => {
     // Вычисляем координаты иконки относительно окна
     const rect = triggerRef.value.getBoundingClientRect();
     
+    const estimatedTooltipHeight = 120;
+    const viewportMargin = 12;
+    const shouldOpenBelow = rect.top < (estimatedTooltipHeight + viewportMargin);
+
+    placement.value = shouldOpenBelow ? 'bottom' : 'top';
+
     tooltipPos.value = {
-        top: rect.top - 10, // Отступ сверху (10px)
-        left: rect.left + rect.width / 2 // Центр по горизонтали
+        top: shouldOpenBelow ? (rect.bottom + 10) : (rect.top - 10),
+        left: rect.left + rect.width / 2
     };
     
     isVisible.value = true;
@@ -33,7 +40,7 @@ const hide = () => {
 <template>
     <div 
         ref="triggerRef"
-        class="inline-flex items-center justify-center cursor-help text-gray-400 transition-all duration-300 hover:text-black z-20"
+        class="inline-flex items-center justify-center cursor-help text-gray-400 transition-all duration-300 hover:text-black dark:hover:text-white z-20"
         @mouseenter="show"
         @mouseleave="hide"
         @focus="show"
@@ -49,7 +56,7 @@ const hide = () => {
                 class="fixed z-[9999] pointer-events-none"
                 :style="{ top: `${tooltipPos.top}px`, left: `${tooltipPos.left}px` }"
             >
-                <div class="transform -translate-x-1/2 -translate-y-full">
+                <div :class="placement === 'top' ? 'transform -translate-x-1/2 -translate-y-full' : 'transform -translate-x-1/2 translate-y-0'">
                     
                     <div :class="[
                         width, 
@@ -60,7 +67,10 @@ const hide = () => {
                     ]">
                         {{ text }}
                         
-                        <svg class="absolute -bottom-1.5 left-1/2 -translate-x-1/2 text-[#09090b]/95 w-4 h-2 drop-shadow-sm" viewBox="0 0 255 127" fill="currentColor">
+                        <svg v-if="placement === 'top'" class="absolute -bottom-1.5 left-1/2 -translate-x-1/2 text-[#09090b]/95 w-4 h-2 drop-shadow-sm" viewBox="0 0 255 127" fill="currentColor">
+                            <path d="M127.5 127.5L0 0H255L127.5 127.5Z"/>
+                        </svg>
+                        <svg v-else class="absolute -top-1.5 left-1/2 -translate-x-1/2 rotate-180 text-[#09090b]/95 w-4 h-2 drop-shadow-sm" viewBox="0 0 255 127" fill="currentColor">
                             <path d="M127.5 127.5L0 0H255L127.5 127.5Z"/>
                         </svg>
                     </div>

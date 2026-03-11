@@ -1,6 +1,6 @@
 <script setup>
 import { ref, computed, watch, nextTick, onUnmounted } from 'vue';
-import { useCalculator } from '../composables/useCalculator';
+import { useCalculator } from '@/core/useCalculator';
 import { useHaptics } from '../composables/useHaptics';
 import { useDatabase } from '@/composables/useDatabase';
 import ModernSelect from './ModernSelect.vue';
@@ -118,6 +118,10 @@ const operationTypes = [
     { value: 'area', label: 'Площадь (м²)' },
     { value: 'roll', label: 'Рулон' }
 ];
+const materialThicknessOptions = [1, 1.5, 2, 3, 4, 5, 6, 8, 10, 12, 15, 18, 20].map(value => ({
+    value,
+    label: `${value} мм`
+}));
 
 watch(activeMainTab, (newVal) => {
     if(subTabsMap[newVal] && subTabsMap[newVal].length > 0) {
@@ -244,7 +248,7 @@ const addItem = async () => {
     const ts = Date.now();
     let newItem = {};
     if (activeSubTab.value === 'materials') {
-        newItem = { id: `mat_${ts}`, inStock: true, type: '', name: '', sheetW: null, sheetH: null, sheetPrice: null, speed: 20 };
+        newItem = { id: `mat_${ts}`, inStock: true, type: '', name: '', thickness: null, sheetW: null, sheetH: null, sheetPrice: null, speed: 20 };
     } else if (activeSubTab.value === 'coatings') {
         newItem = { id: `coat_${ts}`, name: '', price: null, inStock: true, forAcrylic: true, forWood: true };
     } else if (activeSubTab.value === 'accessories') {
@@ -333,7 +337,7 @@ const saveButtonConfig = computed(() => {
 <template>
     <div class="fixed inset-0 bg-black/40 backdrop-blur-sm z-[90] flex items-center justify-center p-0 md:p-4 text-[#18181B] font-sans" @click.self="$emit('close')">
         
-        <div class="bg-white w-full h-full md:h-[90vh] md:max-w-5xl md:rounded-[32px] shadow-2xl flex flex-col overflow-hidden relative border border-white/50">
+        <div class="bg-white w-full h-full md:h-[90vh] md:max-w-5xl md:rounded-[32px] shadow-2xl flex flex-col overflow-hidden relative border border-gray-100 dark:border-white/10">
             
             <div class="md:hidden fixed top-4 left-4 right-4 z-40 bg-white/60 backdrop-blur-xl rounded-[2rem] shadow-sm border border-white/40 ring-1 ring-black/5 px-5 py-4 transition-all">
                 <div class="flex items-center justify-between mb-3">
@@ -504,6 +508,11 @@ const saveButtonConfig = computed(() => {
                                                     <input v-model.lazy.number="item.sheetW" class="w-full md:w-12 text-sm md:text-xs text-center bg-gray-50 border border-gray-100 rounded py-2 md:py-1 outline-none font-bold focus:border-black transition-colors" placeholder="Ш"><span class="text-gray-300 text-[10px]">✕</span><input v-model.lazy.number="item.sheetH" class="w-full md:w-12 text-sm md:text-xs text-center bg-gray-50 border border-gray-100 rounded py-2 md:py-1 outline-none font-bold focus:border-black transition-colors" placeholder="В">
                                                 </div>
                                             </div>
+
+                                            <div v-if="activeSubTab === 'materials'" class="md:col-span-2">
+                                                <label class="md:hidden text-[10px] font-bold uppercase text-gray-400 mb-1 block">Толщина (мм)</label>
+                                                <ModernSelect v-model="item.thickness" :options="materialThicknessOptions" placeholder="Толщина" class="w-full !h-10 md:!h-8" />
+                                            </div>
                                             
                                             <div v-if="activeSubTab === 'materials'" class="md:col-span-1">
                                                 <label class="md:hidden text-[10px] font-bold uppercase text-gray-400 mb-1 block">Скор. (мм/с)</label>
@@ -527,7 +536,7 @@ const saveButtonConfig = computed(() => {
                                                     <label class="md:hidden text-[10px] font-bold uppercase text-gray-400 mb-1 block">Тип расчета</label>
                                                     <div class="flex flex-col w-full">
                                                         <ModernSelect v-model="item.type" :options="operationTypes" placeholder="Тип" class="w-full" />
-                                                        <input v-if="item.type === 'roll'" v-model.lazy.number="item.rollWidth" placeholder="Шир.рул(мм)" class="w-full text-center text-[9px] border-b border-gray-200 outline-none bg-transparent focus:border-black font-bold mt-1">
+                                                        <input v-if="item.type === 'roll'" v-model.lazy.number="item.rollWidth" placeholder="Шир.рул(мм)" class="w-full text-center text-xs border-b border-gray-200 outline-none bg-transparent focus:border-black font-bold mt-1">
                                                     </div>
                                                 </div>
                                                 <span v-else class="text-[10px] font-bold text-gray-400 uppercase tracking-tight flex items-center h-8">
@@ -542,7 +551,7 @@ const saveButtonConfig = computed(() => {
                                                     <input v-else-if="activeSubTab === 'coatings' || activeSubTab === 'accessories' || item.type === 'pieces' || item.type === 'linear' || item.type === 'area' || item.type === 'roll'" v-model.lazy.number="item.price" class="w-full text-center bg-transparent outline-none font-bold text-sm md:text-xs" :placeholder="item.type === 'roll' ? '₽/м.п' : ''">
                                                     <input v-else v-model.lazy.number="item.value" class="w-full text-center bg-transparent outline-none font-bold text-sm md:text-xs">
                                                     <span class="text-gray-400 text-[9px] font-bold ml-1 whitespace-nowrap">
-                                                        {{ item.type === 'percent' ? '%' : item.type === 'linear' ? '₽/м' : item.type === 'area' ? '₽/м²' : item.type === 'roll' ? '₽/мп' : '₽' }}
+                                                        {{ activeSubTab === 'coatings' ? '₽/ед.' : item.type === 'percent' ? '%' : item.type === 'linear' ? '₽/м' : item.type === 'area' ? '₽/м²' : item.type === 'roll' ? '₽/мп' : '₽' }}
                                                     </span>
                                                 </div>
                                             </div>
@@ -601,7 +610,7 @@ const saveButtonConfig = computed(() => {
             <Teleport to="body">
                 <Transition name="modal-fade">
                     <div v-if="confirmDialog.show" class="fixed inset-0 z-[99999] flex items-center justify-center bg-black/60 backdrop-blur-sm" @click.self="confirmDialog.show = false">
-                        <div class="bg-white rounded-2xl shadow-2xl border border-gray-100 p-6 max-w-sm w-full mx-4 transform transition-all scale-100 relative">
+                        <div class="bg-white rounded-[2rem] shadow-2xl border border-gray-100 p-6 max-w-sm w-full mx-4 transform transition-all scale-100 relative">
                             <h3 class="text-lg font-black mb-2">{{ confirmDialog.title }}</h3>
                             <p class="text-sm text-gray-500 mb-6 leading-relaxed">{{ confirmDialog.message }}</p>
                             <div class="flex gap-3">

@@ -1,4 +1,5 @@
 import {
+  doc,
   getDoc,
   setDoc,
   updateDoc,
@@ -10,6 +11,7 @@ import {
   limit as qLimit,
   serverTimestamp,
 } from 'firebase/firestore'
+import { db } from '@/firebase'
 
 import {
   globalConfigDoc,
@@ -104,10 +106,6 @@ export async function restoreTrash(uid: string, id: string, target: 'history' | 
     await setDoc(historyDoc(uid, id), { ...data, restoredAt: serverTimestamp() }, { merge: true })
   } else if (target === 'custom' && customPath?.col) {
     // safe minimal: write back under users/{uid}/{col}/{id}
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
-    const { doc } = await import('firebase/firestore')
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
-    const { db } = await import('@/firebase')
     await setDoc(doc(db as any, 'users', uid, customPath.col, id), { ...data, restoredAt: serverTimestamp() }, { merge: true })
   }
 

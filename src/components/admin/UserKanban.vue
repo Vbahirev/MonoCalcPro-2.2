@@ -3,6 +3,7 @@ import { ref, computed, reactive, watch } from 'vue';
 import { useDatabase } from '@/composables/useDatabase';
 import draggable from 'vuedraggable';
 import { isPermAllowedForRole } from '@/core/auth/permissions';
+import { deleteKanbanUser } from '@/services/deleteKanbanUser';
 
 const { allUsers, updateUserRole, user: currentUser, userRole, hasPermission } = useDatabase();
 
@@ -19,6 +20,46 @@ const localPermissions = ref({});
 const isSearchActive = computed(() => !!searchQuery.value.trim());
 const isSaving = ref(false);
 const saveError = ref('');
+
+const deleteConfirmUser = ref(null);
+const isDeleting = ref(false);
+const deleteError = ref('');
+
+const openDeleteConfirm = (e, userItem) => {
+    e.stopPropagation();
+    deleteConfirmUser.value = userItem;
+    deleteError.value = '';
+};
+
+const closeDeleteConfirm = () => {
+    deleteConfirmUser.value = null;
+    deleteError.value = '';
+};
+
+const handleDeleteUser = async () => {
+    const target = deleteConfirmUser.value;
+    if (!target) return;
+    if (!canManageUsers.value) return;
+    if (target.id === currentUser.value?.uid) {
+        deleteError.value = 'Нельзя удалить собственный аккаунт.';
+        return;
+    }
+    isDeleting.value = true;
+    deleteError.value = '';
+    try {
+        await deleteKanbanUser({
+            targetUserId: target.id,
+            userData: { email: target.email, role: target.role },
+            currentUserId: currentUser.value?.uid,
+        });
+        closeDeleteConfirm();
+        rebuildColumns();
+    } catch (e) {
+        deleteError.value = e?.message || 'Ошибка при удалении пользователя.';
+    } finally {
+        isDeleting.value = false;
+    }
+};
 
 // Колонки канбана должны быть МУТАБЕЛЬНЫМИ массивами.
 // Нельзя передавать в vuedraggable результат фильтрации (это новый массив, drag не работает).
@@ -65,6 +106,7 @@ const PERMISSION_GROUPS = [
             { key: 'settings.materials.write', label: 'Редактирование материалов', desc: 'Добавление и изменение материалов' },
             { key: 'settings.prices.read', label: 'Просмотр цен', desc: 'Чтение прайсов услуг' },
             { key: 'settings.prices.write', label: 'Редактирование цен', desc: 'Изменение стоимости услуг' },
+            { key: 'invoice.stamp.edit', label: 'Редактирование печати в КП', desc: 'Загрузка и изменение PNG-печати в предпросмотре КП' },
         ],
     },
     {
@@ -72,6 +114,7 @@ const PERMISSION_GROUPS = [
         items: [
             { key: 'history.view', label: 'Просмотр истории', desc: 'Открытие списка сохранённых проектов' },
             { key: 'history.write', label: 'Сохранение в историю', desc: 'Создание и обновление сохранённых расчётов' },
+            { key: 'history.bulkDelete', label: 'Массовое удаление проек.', desc: 'Множественный выбор и удаление в архиве проектов' },
             { key: 'trash.view', label: 'Просмотр удалённых данных', desc: 'Доступ к архиву удалений' },
             { key: 'trash.restore', label: 'Восстановление из архива', desc: 'Возврат удалённых данных' },
             { key: 'trash.delete', label: 'Удаление из архива', desc: 'Удаление элементов архива' },
@@ -272,6 +315,9 @@ const openUserDetailsIfAllowed = (user) => {
                             <div class="flex-1 min-w-0">
                                 <div class="text-xs font-bold truncate">{{ element.email }}</div>
                             </div>
+                            <button v-if="canManageUsers && element.id !== currentUser?.uid" @click.stop="openDeleteConfirm($event, element)" class="opacity-0 group-hover:opacity-100 text-red-400 hover:text-red-600 transition-all ml-1" title="Удалить пользователя" type="button">
+                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6l-1 14H6L5 6"></path><path d="M10 11v6M14 11v6"></path><path d="M9 6V4h6v2"></path></svg>
+                            </button>
                         </div>
                     </template>
                 </draggable>
@@ -299,7 +345,10 @@ const openUserDetailsIfAllowed = (user) => {
                             <div class="flex-1 min-w-0">
                                 <div class="text-xs font-bold truncate">{{ element.email }}</div>
                             </div>
-                            <div class="opacity-0 group-hover:opacity-100 text-gray-400">
+                            <button v-if="canManageUsers && element.id !== currentUser?.uid" @click.stop="openDeleteConfirm($event, element)" class="opacity-0 group-hover:opacity-100 text-red-400 hover:text-red-600 transition-all" title="Удалить пользователя" type="button">
+                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6l-1 14H6L5 6"></path><path d="M10 11v6M14 11v6"></path><path d="M9 6V4h6v2"></path></svg>
+                            </button>
+                            <div v-else class="opacity-0 group-hover:opacity-100 text-gray-400">
                                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="1"></circle><circle cx="19" cy="12" r="1"></circle><circle cx="5" cy="12" r="1"></circle></svg>
                             </div>
                         </div>
@@ -329,6 +378,9 @@ const openUserDetailsIfAllowed = (user) => {
                             <div class="flex-1 min-w-0">
                                 <div class="text-xs font-bold truncate">{{ element.email }}</div>
                             </div>
+                            <button v-if="canManageUsers && element.id !== currentUser?.uid" @click.stop="openDeleteConfirm($event, element)" class="opacity-0 group-hover:opacity-100 text-red-400 hover:text-red-600 transition-all" title="Удалить пользователя" type="button">
+                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6l-1 14H6L5 6"></path><path d="M10 11v6M14 11v6"></path><path d="M9 6V4h6v2"></path></svg>
+                            </button>
                         </div>
                     </template>
                 </draggable>
@@ -356,6 +408,9 @@ const openUserDetailsIfAllowed = (user) => {
                             <div class="flex-1 min-w-0">
                                 <div class="text-xs font-bold truncate">{{ element.email }}</div>
                             </div>
+                            <button v-if="canManageUsers && element.id !== currentUser?.uid" @click.stop="openDeleteConfirm($event, element)" class="opacity-0 group-hover:opacity-100 text-red-400 hover:text-red-600 transition-all" title="Удалить пользователя" type="button">
+                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6l-1 14H6L5 6"></path><path d="M10 11v6M14 11v6"></path><path d="M9 6V4h6v2"></path></svg>
+                            </button>
                         </div>
                     </template>
                 </draggable>
@@ -370,7 +425,34 @@ const openUserDetailsIfAllowed = (user) => {
         </div>
 
         <Teleport to="body">
+            <!-- Подтверждение удаления пользователя -->
             <Transition name="modal-scale">
+                <div v-if="deleteConfirmUser" class="fixed inset-0 z-[10001] flex items-center justify-center bg-black/50 backdrop-blur-sm p-4" @click.self="closeDeleteConfirm">
+                    <div class="bg-white dark:bg-[#1C1C1E] w-full max-w-xs rounded-[2rem] p-6 shadow-2xl border border-gray-100 dark:border-white/10">
+                        <div class="flex flex-col items-center gap-4 text-center">
+                            <div class="w-14 h-14 rounded-full bg-red-100 dark:bg-red-900/30 flex items-center justify-center text-red-500">
+                                <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6l-1 14H6L5 6"></path><path d="M10 11v6M14 11v6"></path><path d="M9 6V4h6v2"></path></svg>
+                            </div>
+                            <div>
+                                <h3 class="text-base font-black text-[#1d1d1f] dark:text-white mb-1">Удалить пользователя?</h3>
+                                <p class="text-xs text-gray-500 dark:text-gray-400 font-bold break-all">{{ deleteConfirmUser.email }}</p>
+                                <p class="text-[11px] text-gray-400 mt-2">Запись будет помещена в архив администратора. Это действие необратимо.</p>
+                            </div>
+                            <div v-if="deleteError" class="w-full rounded-xl bg-red-50 dark:bg-red-900/20 text-red-600 dark:text-red-300 px-3 py-2 text-xs font-bold">
+                                {{ deleteError }}
+                            </div>
+                            <div class="flex gap-3 w-full">
+                                <button @click="closeDeleteConfirm" :disabled="isDeleting" class="flex-1 h-11 rounded-xl bg-gray-100 dark:bg-white/5 text-gray-600 dark:text-gray-300 font-bold text-sm hover:bg-gray-200 transition-colors disabled:opacity-50">Отмена</button>
+                                <button @click="handleDeleteUser" :disabled="isDeleting" class="flex-1 h-11 rounded-xl bg-red-500 hover:bg-red-600 text-white font-bold text-sm shadow-lg transition-all active:scale-95 disabled:opacity-60 disabled:cursor-not-allowed">
+                                    {{ isDeleting ? 'Удаление…' : 'Удалить' }}
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </Transition>
+
+        <Transition name="modal-scale">
                 <div v-if="showDetailsModal && selectedUser" class="fixed inset-0 z-[10000] flex items-center justify-center bg-black/40 backdrop-blur-sm p-4" @click.self="closeDetails">
                     <div class="bg-white dark:bg-[#1C1C1E] w-full max-w-sm rounded-[2rem] p-6 shadow-2xl border border-gray-100 dark:border-white/10 max-h-[80vh] flex flex-col">
                         

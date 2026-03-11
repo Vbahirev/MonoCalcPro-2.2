@@ -1,6 +1,6 @@
 import { ref } from 'vue';
 import { collection, getDocs, query, orderBy } from 'firebase/firestore';
-import { db } from '@/services/firebase';
+import { db } from '@/firebase';
 
 export function useArchive() {
   const items = ref([]);

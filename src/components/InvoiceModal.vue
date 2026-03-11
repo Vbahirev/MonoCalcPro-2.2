@@ -1,6 +1,10 @@
 <script setup>
 import { computed, ref, watch } from 'vue';
+import { useDatabase } from '@/composables/useDatabase';
 import { isCoatingAllowedForMaterial } from '@/utils/coatingCompatibility';
+import { COATING_PRICING_MODE_DTF_LINEAR, getCoatingPricePerCm2 } from '@/utils/coatingPricing';
+
+const INVOICE_PRINT_PREFS_KEY = 'monocalc_invoice_print_prefs_v1';
 
 const props = defineProps({
     show: Boolean,
@@ -30,12 +34,82 @@ const toMoneyNum = (value) => {
     const parsed = Number(value);
     return Number.isFinite(parsed) ? parsed : 0;
 };
+const hasNumericInput = (value) => {
+    if (value === '' || value === null || value === undefined) return false;
+    return Number.isFinite(toMoneyNum(value));
+};
+const usesValueField = (type) => type === 'fixed' || type === 'percent';
+const normalizeSides = (value) => (Number(value) === 2 ? 2 : 1);
 
 // Добавляем 'print' в список событий
 const emit = defineEmits(['close', 'print']);
 
 const currentDate = new Date().toLocaleDateString('ru-RU');
 const invoiceNumber = ref(1932);
+const managerName = ref('');
+const stampEnabled = ref(true);
+const stampImageDataUrl = ref('');
+const stampOffsetX = ref(0);
+const stampOffsetY = ref(0);
+const stampScale = ref(1);
+const { userRole, hasPermission, processingDB, accessoriesDB, packagingDB, designDB } = useDatabase();
+const canManageStampAsset = computed(() => {
+    const role = String(userRole.value || '').toLowerCase();
+    if (role === 'superadmin') return true;
+    return hasPermission('invoice.stamp.edit');
+});
+
+const loadPrintPrefs = () => {
+    try {
+        const raw = localStorage.getItem(INVOICE_PRINT_PREFS_KEY);
+        if (!raw) return;
+        const parsed = JSON.parse(raw);
+        stampEnabled.value = true;
+        stampImageDataUrl.value = typeof parsed.stampImageDataUrl === 'string' ? parsed.stampImageDataUrl : '';
+        stampOffsetX.value = Number.isFinite(Number(parsed.stampOffsetX)) ? Number(parsed.stampOffsetX) : 0;
+        stampOffsetY.value = Number.isFinite(Number(parsed.stampOffsetY)) ? Number(parsed.stampOffsetY) : 0;
+        const scale = Number(parsed.stampScale);
+        stampScale.value = Number.isFinite(scale) ? Math.max(0.3, Math.min(2.5, scale)) : 1;
+    } catch (e) {}
+};
+
+const savePrintPrefs = () => {
+    try {
+        localStorage.setItem(INVOICE_PRINT_PREFS_KEY, JSON.stringify({
+            stampImageDataUrl: stampImageDataUrl.value || '',
+            stampOffsetX: Number(stampOffsetX.value) || 0,
+            stampOffsetY: Number(stampOffsetY.value) || 0,
+            stampScale: Number(stampScale.value) || 1,
+        }));
+    } catch (e) {}
+};
+
+const handleStampUpload = (event) => {
+    if (!canManageStampAsset.value) return;
+    const file = event?.target?.files?.[0];
+    if (!file) return;
+    if (!String(file.type || '').includes('png')) {
+        event.target.value = '';
+        return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => {
+        stampImageDataUrl.value = typeof reader.result === 'string' ? reader.result : '';
+        savePrintPrefs();
+    };
+    reader.readAsDataURL(file);
+    event.target.value = '';
+};
+
+const clearStamp = () => {
+    stampImageDataUrl.value = '';
+    savePrintPrefs();
+};
+
+const showStampOnPrint = computed(() => stampEnabled.value && !!stampImageDataUrl.value);
+const stampStyle = computed(() => ({
+    transform: `translate(${Number(stampOffsetX.value) || 0}px, ${Number(stampOffsetY.value) || 0}px) scale(${Number(stampScale.value) || 1})`
+}));
 
 watch(() => props.show, (newVal) => {
     if (newVal) {
@@ -43,7 +117,14 @@ watch(() => props.show, (newVal) => {
         let nextNum = stored ? parseInt(stored) + 1 : 1932;
         invoiceNumber.value = nextNum;
         localStorage.setItem('monocalc_invoice_counter', nextNum);
+        loadPrintPrefs();
+        stampEnabled.value = true;
+        managerName.value = '';
     }
+});
+
+watch([stampEnabled, stampImageDataUrl, stampOffsetX, stampOffsetY, stampScale], () => {
+    savePrintPrefs();
 });
 
 const calculateLayerPrice = (layer) => {
@@ -65,7 +146,8 @@ const calculateLayerPrice = (layer) => {
 
     const sheetW = positive(toNum(m.sheetW, 0));
     const sheetH = positive(toNum(m.sheetH, 0));
-    const sheetPrice = nonNeg(toNum(m.sheetPrice, 0));
+    const materialMarkup = nonNeg(toNum(m.markupPercent, 0));
+    const sheetPrice = nonNeg(toNum(m.sheetPrice, 0)) * (1 + materialMarkup / 100);
     const sheetAreaCm2 = (sheetW / 10) * (sheetH / 10);
     const pricePerCm2 = sheetAreaCm2 > 0 ? (sheetPrice / sheetAreaCm2) : 0;
     const w = positive(toNum(layer.w, 0));
@@ -94,9 +176,10 @@ const calculateLayerPrice = (layer) => {
     let finishCost = 0;
     if (layer.finishing !== 'none') {
         const coat = props.coatings.find(c => c.id === layer.finishing);
-        if (coat && isCoatingAllowedForMaterial(coat, m)) {
+        if (coat && coat?.pricingModel !== COATING_PRICING_MODE_DTF_LINEAR && isCoatingAllowedForMaterial(coat, m)) {
             const finishingMultiplier = layer.finishingBothSides ? 2 : 1;
-            finishCost = currentArea * nonNeg(toNum(coat.price, 0)) * finishingMultiplier;
+            const coatingPricePerCm2 = getCoatingPricePerCm2(coat);
+            finishCost = currentArea * coatingPricePerCm2 * finishingMultiplier;
         }
     }
 
@@ -107,7 +190,7 @@ const allItems = computed(() => {
     const list = [];
     let idx = 1;
 
-    props.layers.forEach(l => {
+    [...(props.layers || [])].reverse().forEach(l => {
         const calculatedTotal = calculateLayerPrice(l);
         if (calculatedTotal <= 0) return;
 
@@ -126,7 +209,47 @@ const allItems = computed(() => {
     });
 
     const baseForPercent = Number(props?.totals?.layers || 0);
-    const calcListItemTotal = (item) => {
+    const resolveInvoiceItemFromDb = (item, section) => {
+        const listBySection = {
+            processing: processingDB?.value,
+            accessories: accessoriesDB?.value,
+            packaging: packagingDB?.value,
+            design: designDB?.value,
+        };
+        const dbList = listBySection[section];
+        if (!item?.dbId || !Array.isArray(dbList) || !dbList.length) return item;
+        const dbItem = dbList.find((entry) => entry?.id === item.dbId);
+        if (!dbItem) return item;
+
+        const markup = Math.max(0, toMoneyNum(dbItem?.markupPercent));
+        const applyMarkup = (value) => {
+            const amount = toMoneyNum(value);
+            return amount * (1 + markup / 100);
+        };
+
+        const nextType = dbItem?.type || item?.type || 'fixed';
+        const shouldUseValue = usesValueField(nextType);
+        const sourceValue = nextType === 'percent'
+            ? (dbItem?.price ?? dbItem?.value ?? 0)
+            : (dbItem?.value ?? dbItem?.price ?? 0);
+        const sourcePrice = dbItem?.price ?? dbItem?.value ?? 0;
+
+        return {
+            ...item,
+            name: dbItem?.name ?? item?.name,
+            type: nextType,
+            value: shouldUseValue
+                ? (hasNumericInput(item?.value) ? toMoneyNum(item.value) : applyMarkup(sourceValue))
+                : null,
+            price: shouldUseValue
+                ? null
+                : (hasNumericInput(item?.price) ? toMoneyNum(item.price) : applyMarkup(sourcePrice)),
+            rollWidthMm: toMoneyNum(dbItem?.rollWidthMm ?? dbItem?.rollWidth) || item?.rollWidthMm,
+        };
+    };
+
+    const calcListItemTotal = (itemRaw, section) => {
+        const item = resolveInvoiceItemFromDb(itemRaw, section);
         const toNum = (v, fallback = 0) => {
             const n = typeof v === 'string' ? Number(v.replace(',', '.')) : Number(v);
             return Number.isFinite(n) ? n : fallback;
@@ -140,30 +263,49 @@ const allItems = computed(() => {
         };
 
         const val = nonNeg(toNum(item?.value, 0));
+        const percentValRaw = toNum(item?.value, NaN);
         const price = nonNeg(toNum(item?.price, 0));
         const qty = qtySafe(item?.qty);
         const w = positive(toNum(item?.w, 0));
+        const l = positive(toNum(item?.l, 0));
         const h = positive(toNum(item?.h, 0));
         const length = nonNeg(toNum(item?.length, 0));
 
-        if (item?.type === 'percent') return baseForPercent * (clamp(val, 0, 100) / 100);
+        if (item?.type === 'percent') {
+            const percentVal = Number.isFinite(percentValRaw) ? Math.max(0, percentValRaw) : Math.max(0, price);
+            return baseForPercent * (percentVal / 100);
+        }
+        if (item?.type === 'pieces') return price * qty;
+        if (item?.type === 'fixed') return val * qty;
         if (item?.type === 'linear' || item?.type === 'roll') return price * (length / 1000) * qty;
         if (item?.type === 'linear_mm') return price * length * qty;
         if (item?.type === 'area') return price * ((w * h) / 1000000) * qty;
+        if (item?.type === 'area_cm2') return price * ((w * h) / 100) * normalizeSides(item?.sides) * qty;
         if (item?.type === 'area_mm2') return price * (w * h) * qty;
-        if (val > 0) return val;
+        if (item?.type === 'box_mm') {
+            const boxAreaMm2 = 2 * ((w * l) + (w * h) + (l * h));
+            return price * (boxAreaMm2 / 1000000) * qty;
+        }
+        if (val > 0) return val * qty;
         if (price > 0) return price * qty;
         return 0;
     };
 
-    props.processing.forEach(p => {
-        let displayTotal = calcListItemTotal(p);
+    [...(props.processing || [])].reverse().forEach(p => {
+        let displayTotal = calcListItemTotal(p, 'processing');
 
         if (displayTotal > 0) {
+            const width = Number(p?.w) || 0;
+            const height = Number(p?.h) || 0;
+            const sides = normalizeSides(p?.sides);
             list.push({
                 id: idx++,
                 name: p.name,
-                desc: p.type === 'fixed' ? 'Услуга' : '',
+                desc: p.type === 'fixed'
+                    ? 'Услуга'
+                    : p.type === 'area_cm2'
+                        ? `${width || 0}x${height || 0} мм • ${sides} ${sides === 2 ? 'стороны' : 'сторона'}`
+                        : '',
                 category: 'Услуга',
                 qty: p.qty,
                 total: displayTotal
@@ -171,22 +313,32 @@ const allItems = computed(() => {
         }
     });
 
-    props.accessories.forEach(a => {
-        const total = calcListItemTotal(a);
+    [...(props.accessories || [])].reverse().forEach(a => {
+        const total = calcListItemTotal(a, 'accessories');
         if (total > 0) {
             list.push({ id: idx++, name: a.name, desc: 'Фурнитура', category: 'Товар', qty: a.qty, total: total });
         }
     });
 
-    props.packaging.forEach(p => {
-        const total = calcListItemTotal(p);
+    [...(props.packaging || [])].reverse().forEach(p => {
+        const total = calcListItemTotal(p, 'packaging');
         if (total > 0) {
-            list.push({ id: idx++, name: p.name, desc: 'Упаковка', category: 'Товар', qty: p.qty, total: total });
+            const width = Number(p?.w) || 0;
+            const length = Number(p?.l) || 0;
+            const height = Number(p?.h) || 0;
+            const runLength = Number(p?.length) || 0;
+            const rollWidth = Number(p?.rollWidthMm || p?.rollWidth) || 0;
+            const desc = p?.type === 'box_mm'
+                ? `Коробка ${width || 0}x${length || 0}x${height || 0} мм`
+                : p?.type === 'roll'
+                    ? `Стрейч ${rollWidth || 0} мм, ${runLength || 0} мм`
+                    : 'Упаковка';
+            list.push({ id: idx++, name: p.name, desc, category: 'Товар', qty: p.qty, total: total });
         }
     });
 
-    props.design.forEach(d => {
-        const total = calcListItemTotal(d);
+    [...(props.design || [])].reverse().forEach(d => {
+        const total = calcListItemTotal(d, 'design');
         if (total > 0) {
             list.push({ id: idx++, name: d.name, desc: 'Разработка макета', category: 'Услуга', qty: d.qty || 1, total });
         }
@@ -197,6 +349,51 @@ const allItems = computed(() => {
 
 const subTotalOne = computed(() => {
     return Math.round((allItems.value || []).reduce((sum, item) => sum + toMoneyNum(item?.total), 0));
+});
+
+const FIRST_PAGE_ROWS = 11;
+const MIDDLE_PAGE_ROWS = 14;
+const LAST_PAGE_ROWS = 10;
+
+const invoicePages = computed(() => {
+    const items = allItems.value || [];
+
+    if (!items.length) {
+        return [{ items: [], isFirst: true, isLast: true }];
+    }
+
+    const pages = [];
+    let cursor = 0;
+
+    const firstItems = items.slice(cursor, cursor + FIRST_PAGE_ROWS);
+    const isSinglePage = items.length <= FIRST_PAGE_ROWS;
+    pages.push({ items: firstItems, isFirst: true, isLast: isSinglePage });
+    cursor += firstItems.length;
+
+    if (isSinglePage) {
+        return pages;
+    }
+
+    let remaining = items.length - cursor;
+    while (remaining > MIDDLE_PAGE_ROWS + LAST_PAGE_ROWS) {
+        const take = MIDDLE_PAGE_ROWS;
+        const chunk = items.slice(cursor, cursor + take);
+        pages.push({ items: chunk, isFirst: false, isLast: false });
+        cursor += chunk.length;
+        remaining = items.length - cursor;
+    }
+
+    if (remaining > LAST_PAGE_ROWS) {
+        const minPenultimate = remaining - LAST_PAGE_ROWS;
+        const maxPenultimate = Math.min(MIDDLE_PAGE_ROWS, remaining - 1);
+        const penultimateCount = Math.max(minPenultimate, maxPenultimate);
+        const chunk = items.slice(cursor, cursor + penultimateCount);
+        pages.push({ items: chunk, isFirst: false, isLast: false });
+        cursor += chunk.length;
+    }
+
+    pages.push({ items: items.slice(cursor), isFirst: false, isLast: true });
+    return pages;
 });
 
 const projectMarkupPct = computed(() => {
@@ -212,7 +409,9 @@ const projectDiscountPct = computed(() => {
 const markupRubOne = computed(() => Math.round(subTotalOne.value * (projectMarkupPct.value / 100)));
 const beforeDiscountOne = computed(() => subTotalOne.value + markupRubOne.value);
 const discountRubOne = computed(() => Math.round(beforeDiscountOne.value * (projectDiscountPct.value / 100)));
-const pricePerOne = computed(() => Math.max(0, Math.round(beforeDiscountOne.value - discountRubOne.value)));
+const minimumOrderPriceOne = computed(() => Math.max(0, Math.round(toMoneyNum(props?.settings?.minimumOrderPrice))));
+const calculatedPricePerOne = computed(() => Math.max(0, Math.round(beforeDiscountOne.value - discountRubOne.value)));
+const pricePerOne = computed(() => Math.max(minimumOrderPriceOne.value, calculatedPricePerOne.value));
 const totalForAll = computed(() => Math.round(pricePerOne.value * safeProductQty.value));
 const formatMoney = (value) => new Intl.NumberFormat('ru-RU').format(Math.max(0, Number(value) || 0));
 
@@ -229,40 +428,78 @@ const printInvoice = () => {
 </script>
 
 <template>
-    <div v-if="show" class="invoice-modal fixed inset-0 z-[100] bg-black/85 backdrop-blur-sm flex flex-col items-center overflow-y-auto p-4 md:p-8 text-[#18181B]" @click.self="$emit('close')">
-        
-        <div class="invoice-root w-full max-w-[210mm] flex flex-col relative min-h-full">
+    <Teleport to="body">
+        <div v-if="show" class="invoice-modal fixed inset-0 z-[100] bg-black/85 backdrop-blur-sm flex flex-col items-center overflow-y-auto p-4 md:p-8 text-[#18181B]" @click.self="$emit('close')">
             
-            <div class="flex justify-end gap-3 mb-6 no-print shrink-0">
-                <button @click="printInvoice" class="bg-white text-black px-5 py-2.5 rounded-xl font-bold text-xs uppercase tracking-wider shadow-lg hover:bg-gray-100 transition-all flex items-center gap-2 active:scale-95">
-                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 6 2 18 2 18 9"></polyline><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"></path><rect x="6" y="14" width="12" height="8"></rect></svg>
-                    Печать / Сохранить PDF
-                </button>
-                <button @click="$emit('close')" class="bg-white/10 text-white px-5 py-2.5 rounded-xl font-bold text-xs uppercase tracking-wider hover:bg-white/20 transition-all active:scale-95 backdrop-blur-md">
-                    Закрыть
-                </button>
+            <div class="invoice-actions-track no-print">
+                <div class="invoice-actions-rail">
+                    <div class="invoice-actions">
+                        <div class="invoice-print-prefs">
+                            <label class="invoice-prefs-row">
+                                <span>Менеджер</span>
+                                <input v-model="managerName" type="text" placeholder="Кто печатает КП" class="invoice-pref-input">
+                            </label>
+                            <div class="invoice-prefs-row invoice-prefs-row--inline">
+                                <label class="invoice-check">
+                                    <input v-model="stampEnabled" type="checkbox" class="invoice-check-input">
+                                    <span class="invoice-check-toggle" :class="{ 'is-on': stampEnabled }"><span class="invoice-check-knob"></span></span>
+                                    <span>Печатать печать</span>
+                                </label>
+                                <label v-if="canManageStampAsset" class="invoice-upload-btn">
+                                    <input type="file" accept="image/png" @change="handleStampUpload" class="hidden">
+                                    <span>{{ stampImageDataUrl ? 'Заменить PNG' : 'Загрузить PNG' }}</span>
+                                </label>
+                                <button v-if="canManageStampAsset && stampImageDataUrl" @click="clearStamp" class="invoice-clear-btn" type="button">Убрать</button>
+                            </div>
+                            <div v-if="canManageStampAsset && stampImageDataUrl" class="invoice-prefs-row invoice-prefs-sliders">
+                                <label>Смещение X <input v-model.number="stampOffsetX" type="range" min="-220" max="220" step="1"></label>
+                                <label>Смещение Y <input v-model.number="stampOffsetY" type="range" min="-220" max="220" step="1"></label>
+                                <label>Размер <input v-model.number="stampScale" type="range" min="0.3" max="2.5" step="0.01"></label>
+                            </div>
+                        </div>
+                        <button @click="printInvoice" class="bg-white text-black px-5 py-2.5 rounded-xl font-bold text-xs uppercase tracking-wider shadow-lg hover:bg-gray-100 transition-all flex items-center gap-2 active:scale-95">
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 6 2 18 2 18 9"></polyline><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"></path><rect x="6" y="14" width="12" height="8"></rect></svg>
+                            Печать / Сохранить PDF
+                        </button>
+                        <button @click="$emit('close')" class="bg-white/10 text-white px-5 py-2.5 rounded-xl font-bold text-xs uppercase tracking-wider hover:bg-white/20 transition-all active:scale-95 backdrop-blur-md">
+                            Закрыть
+                        </button>
+                    </div>
+                </div>
             </div>
 
-            <div class="invoice-sheet bg-white w-full min-h-[297mm] shadow-2xl relative flex flex-col animate-slide-up print:shadow-none print:w-full print:h-auto">
-                <div class="p-12 pb-8 border-b border-gray-100 flex justify-between items-start">
-                    <div><h1 class="text-3xl font-black tracking-tight text-black mb-2">Печатный двор</h1></div>
-                    <div class="text-right"><div class="text-2xl font-bold text-black mb-1">КП № {{ invoiceNumber }}</div><div class="text-sm text-gray-500 font-medium">от {{ currentDate }}</div></div>
-                </div>
-                <div class="px-12 py-8 flex justify-between gap-12">
-                    <div class="flex-1"><div v-if="project.client || project.name"><h3 class="text-[10px] font-bold uppercase tracking-widest text-gray-400 mb-3">Заказчик</h3><div v-if="project.client" class="text-lg font-bold text-black mb-1">{{ project.client }}</div><div v-if="project.name" class="text-sm text-gray-500">{{ project.name }}</div></div></div>
-                    <div class="text-right flex-1"><h3 class="text-[10px] font-bold uppercase tracking-widest text-gray-400 mb-3">Исполнитель</h3><div class="text-sm font-bold text-black">"Печатный двор"</div><div class="text-sm text-gray-500 mt-1">г. Биробиджан, ул. Советская 60А</div><div class="text-sm text-gray-500 font-medium mt-1">+7 (924) 742-07-76</div></div>
-                </div>
-                <div class="invoice-table-wrap px-12 py-4 flex-1">
+            <div class="invoice-root w-full max-w-[210mm] flex flex-col relative min-h-full">
+
+            <div
+                v-for="(page, pageIndex) in invoicePages"
+                :key="`invoice-page-${pageIndex + 1}`"
+                class="invoice-sheet invoice-sheet--items animate-slide-up"
+                :class="{ 'invoice-sheet--continued': !page.isFirst, 'invoice-sheet--last': page.isLast }"
+            >
+                <template v-if="page.isFirst">
+                    <div class="invoice-header border-b border-gray-100 flex justify-between items-start">
+                        <div><h1 class="text-3xl font-black tracking-tight text-black mb-2">Печатный двор</h1></div>
+                        <div class="text-right"><div class="text-2xl font-bold text-black mb-1">КП № {{ invoiceNumber }}</div><div class="text-sm text-gray-500 font-medium">от {{ currentDate }}</div><div class="text-[10px] text-gray-400 font-bold uppercase tracking-widest mt-2">Стр. {{ pageIndex + 1 }} / {{ invoicePages.length }}</div></div>
+                    </div>
+                    <div class="invoice-parties flex justify-between gap-12">
+                        <div class="flex-1"><div v-if="project.client || project.name"><h3 class="text-[10px] font-bold uppercase tracking-widest text-gray-400 mb-3">Заказчик</h3><div v-if="project.client" class="text-lg font-bold text-black mb-1">{{ project.client }}</div><div v-if="project.name" class="text-sm text-gray-500">{{ project.name }}</div></div></div>
+                        <div class="text-right flex-1"><h3 class="text-[10px] font-bold uppercase tracking-widest text-gray-400 mb-3">Исполнитель</h3><div class="text-sm font-bold text-black">"Печатный двор"</div><div class="text-sm text-gray-500 mt-1">г. Биробиджан, ул. Советская 60А</div><div class="text-sm text-gray-500 font-medium mt-1">+7 (924) 742-07-76</div></div>
+                    </div>
+                </template>
+
+                <div class="invoice-table-wrap" :class="{ 'invoice-table-wrap--continued': !page.isFirst }">
+                    <div v-if="!page.isFirst" class="invoice-continuation-label">Стр. {{ pageIndex + 1 }} / {{ invoicePages.length }}</div>
                     <table class="w-full text-left border-collapse">
                         <thead><tr class="border-b-2 border-black"><th class="py-3 text-[10px] font-black uppercase tracking-wider text-black w-10">#</th><th class="py-3 text-[10px] font-black uppercase tracking-wider text-black">Наименование</th><th class="py-3 text-[10px] font-black uppercase tracking-wider text-black w-24">Тип</th><th class="py-3 text-[10px] font-black uppercase tracking-wider text-black text-center w-16">Кол-во</th><th class="py-3 text-[10px] font-black uppercase tracking-wider text-black text-right w-28">Сумма</th></tr></thead>
                         <tbody class="text-sm text-gray-700">
-                            <tr v-for="item in allItems" :key="item.id" class="border-b border-gray-100 last:border-0"><td class="py-4 text-gray-400 font-medium text-xs">{{ item.id }}</td><td class="py-4 font-bold text-black">{{ item.name }}<div class="text-xs text-gray-400 font-normal mt-0.5">{{ item.desc }}</div></td><td class="py-4 text-xs font-medium text-gray-500">{{ item.category }}</td><td class="py-4 text-center font-bold text-black">{{ item.qty }}</td><td class="py-4 text-right font-bold tabular-nums text-black">{{ (Math.round(item.total ?? 0)).toLocaleString() }} ₽</td></tr>
+                            <tr v-for="item in page.items" :key="item.id" class="border-b border-gray-100 last:border-0"><td class="py-3 text-gray-400 font-medium text-xs">{{ item.id }}</td><td class="py-3 font-bold text-black">{{ item.name }}<div class="text-xs text-gray-400 font-normal mt-0.5">{{ item.desc }}</div></td><td class="py-3 text-xs font-medium text-gray-500">{{ item.category }}</td><td class="py-3 text-center font-bold text-black">{{ item.qty }}</td><td class="py-3 text-right font-bold tabular-nums text-black">{{ (Math.round(item.total ?? 0)).toLocaleString() }} ₽</td></tr>
                         </tbody>
                     </table>
                 </div>
-                <div class="invoice-summary bg-white p-12 mt-auto">
+
+                <div v-if="page.isLast" class="invoice-summary">
                     <div class="flex justify-end mb-6">
-                        <div class="w-64 space-y-3">
+                        <div class="w-64 space-y-3 invoice-total-block">
                             <div v-if="markupRubOne > 0" class="flex justify-between text-sm text-gray-600">
                                 <span>Наценка ({{ project.markup }}%):</span>
                                 <span class="font-bold">+{{ (markupRubOne ?? 0).toLocaleString() }} ₽</span>
@@ -283,15 +520,17 @@ const printInvoice = () => {
                                 <span class="text-base font-black uppercase tracking-widest text-black">Итого:</span>
                                 <span class="invoice-total-line"><span class="invoice-total-number">{{ formatMoney(totalForAll) }}</span><span class="invoice-total-currency">₽</span></span>
                             </div>
+                            <img v-if="showStampOnPrint" :src="stampImageDataUrl" alt="Печать" class="invoice-stamp" :style="stampStyle">
                         </div>
                     </div>
-                    <div class="invoice-footer flex justify-between items-end pt-8 border-t border-gray-200"><div class="text-[10px] text-gray-400 max-w-xs leading-relaxed">Предложение действительно в течение 3 рабочих дней.<br>Не является публичной офертой.</div><div class="text-right"><div class="h-10 w-40 border-b border-black mb-2"></div><div class="text-[10px] text-gray-400 uppercase font-bold tracking-widest">Менеджер</div></div></div>
+                    <div class="invoice-footer flex justify-between items-end pt-8 border-t border-gray-200"><div class="text-[10px] text-gray-400 max-w-xs leading-relaxed">Предложение действительно в течение 3 рабочих дней.<br>Не является публичной офертой.</div><div class="text-center"><div class="text-[18px] font-black text-black leading-none min-h-[22px] mb-2">{{ managerName || ' ' }}</div><div class="w-44 h-px bg-gray-400"></div><div class="text-[11px] font-bold uppercase tracking-widest text-gray-400 mt-2">Менеджер</div></div></div>
                 </div>
             </div>
             
             <div class="h-12 shrink-0 no-print"></div>
+            </div>
         </div>
-    </div>
+    </Teleport>
 </template>
 
 <style>
@@ -337,12 +576,240 @@ const printInvoice = () => {
     font-size: 0.94em;
 }
 
+.invoice-root {
+    gap: 12mm;
+}
+
+.invoice-actions-track {
+    position: sticky;
+    top: 12px;
+    z-index: 120;
+    width: 100%;
+    margin-bottom: 1rem;
+}
+
+.invoice-actions-rail {
+    width: 100%;
+    max-width: 210mm;
+    margin: 0 auto;
+    display: flex;
+    justify-content: flex-end;
+    box-sizing: border-box;
+    padding-right: 10pt;
+    pointer-events: none;
+}
+
+.invoice-actions {
+    pointer-events: auto;
+    display: flex;
+    align-items: flex-start;
+    gap: 0.75rem;
+    padding: 0.45rem;
+    border-radius: 0.9rem;
+    background: rgba(24, 24, 27, 0.58);
+    border: 1px solid rgba(255, 255, 255, 0.14);
+    backdrop-filter: blur(10px);
+}
+
+.invoice-print-prefs {
+    display: flex;
+    flex-direction: column;
+    gap: 0.38rem;
+    min-width: 320px;
+    max-width: 380px;
+    color: #fff;
+}
+
+.invoice-prefs-row {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+}
+
+.invoice-prefs-row--inline {
+    flex-wrap: wrap;
+}
+
+.invoice-pref-input {
+    flex: 1;
+    min-width: 180px;
+    height: 34px;
+    border-radius: 10px;
+    border: 1px solid rgba(255, 255, 255, 0.18);
+    background: rgba(255, 255, 255, 0.14);
+    color: #fff;
+    font-size: 12px;
+    font-weight: 700;
+    padding: 0 10px;
+    text-transform: none;
+    letter-spacing: normal;
+    outline: none;
+}
+
+.invoice-check {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.45rem;
+    font-size: 10px;
+    cursor: pointer;
+}
+
+.invoice-check-input {
+    position: absolute;
+    opacity: 0;
+    width: 0;
+    height: 0;
+    pointer-events: none;
+}
+
+.invoice-check-toggle {
+    width: 2.25rem;
+    height: 1.25rem;
+    border-radius: 9999px;
+    border: 1px solid rgba(255, 255, 255, 0.28);
+    background: rgba(255, 255, 255, 0.12);
+    padding: 2px;
+    display: inline-flex;
+    align-items: center;
+    transition: border-color 0.2s ease, background-color 0.2s ease;
+}
+
+.invoice-check-knob {
+    width: 0.95rem;
+    height: 0.95rem;
+    border-radius: 9999px;
+    background: #ffffff;
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.32);
+    transform: translateX(0);
+    transition: transform 0.2s ease, background-color 0.2s ease;
+}
+
+.invoice-check-toggle.is-on {
+    background: #ffffff;
+    border-color: #ffffff;
+}
+
+.invoice-check-toggle.is-on .invoice-check-knob {
+    background: #111827;
+    transform: translateX(0.98rem);
+}
+
+.invoice-upload-btn,
+.invoice-clear-btn {
+    height: 30px;
+    border-radius: 8px;
+    border: 1px solid rgba(255, 255, 255, 0.2);
+    padding: 0 10px;
+    font-size: 10px;
+    font-weight: 800;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: #fff;
+    background: rgba(255, 255, 255, 0.14);
+    display: inline-flex;
+    align-items: center;
+    cursor: pointer;
+}
+
+.invoice-prefs-sliders {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 0.25rem;
+}
+
+.invoice-prefs-sliders label {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.5rem;
+    font-size: 10px;
+}
+
+.invoice-prefs-sliders input[type="range"] {
+    flex: 1;
+}
+
+.invoice-sheet {
+    width: 100%;
+    max-width: 210mm;
+    min-height: 297mm;
+    background: #fff;
+    opacity: 1;
+    color: #111827;
+    box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.3);
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    isolation: isolate;
+}
+
+.invoice-header {
+    padding: 15mm 14mm 9mm;
+}
+
+.invoice-parties {
+    padding: 9mm 14mm 7mm;
+}
+
+.invoice-table-wrap {
+    padding: 0 14mm 14mm;
+    flex: 1 1 auto;
+}
+
+.invoice-table-wrap--continued {
+    padding-top: 10mm;
+}
+
+.invoice-continuation-label {
+    font-size: 10px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: #9ca3af;
+    font-weight: 700;
+    margin-bottom: 4mm;
+}
+
+.invoice-summary {
+    padding: 14mm;
+    margin-top: auto;
+}
+
+.invoice-total-block {
+    position: relative;
+}
+
+.invoice-stamp {
+    position: absolute;
+    right: 10px;
+    bottom: -6px;
+    width: 140px;
+    max-width: 180px;
+    opacity: 0.95;
+    transform-origin: 100% 100%;
+    pointer-events: none;
+}
+
 @media print {
+    :root {
+        color-scheme: light;
+    }
+
     html, body {
         width: auto !important;
-        height: auto !important;
+        min-height: auto !important;
         overflow: visible !important;
         background: #fff !important;
+        margin: 0 !important;
+        padding: 0 !important;
+    }
+
+    .invoice-modal,
+    .invoice-modal * {
+        visibility: visible !important;
     }
 
     body > :not(.invoice-modal) {
@@ -352,12 +819,14 @@ const printInvoice = () => {
     .invoice-modal {
         position: static !important;
         inset: auto !important;
-        display: block !important;
+        display: flex !important;
+        flex-direction: column !important;
+        align-items: stretch !important;
         background: #fff !important;
         margin: 0 !important;
         padding: 0 !important;
         overflow: visible !important;
-        width: auto !important;
+        width: 100% !important;
         height: auto !important;
         max-height: none !important;
         -webkit-print-color-adjust: exact;
@@ -366,17 +835,20 @@ const printInvoice = () => {
 
     .invoice-root {
         width: 100% !important;
-        max-width: none !important;
-        min-height: 0 !important;
+        max-width: 210mm !important;
+        min-height: auto !important;
         height: auto !important;
-        display: block !important;
+        margin: 0 auto !important;
+        display: flex !important;
+        flex-direction: column !important;
+        gap: 0 !important;
     }
 
     .invoice-sheet {
         box-shadow: none !important;
         background: #fff !important;
-        width: 100% !important;
-        max-width: none !important;
+        width: 210mm !important;
+        max-width: 210mm !important;
         height: auto !important;
         min-height: 297mm !important;
         margin: 0 !important;
@@ -384,6 +856,18 @@ const printInvoice = () => {
         display: flex !important;
         flex-direction: column !important;
         overflow: visible !important;
+        break-inside: avoid !important;
+        page-break-inside: avoid !important;
+    }
+
+    .invoice-sheet {
+        break-after: page !important;
+        page-break-after: always !important;
+    }
+
+    .invoice-sheet:last-of-type {
+        break-after: auto !important;
+        page-break-after: auto !important;
     }
 
     .invoice-table-wrap {
@@ -399,6 +883,7 @@ const printInvoice = () => {
     }
 
     .invoice-footer {
+        margin-top: auto !important;
         break-inside: avoid !important;
         page-break-inside: avoid !important;
     }
@@ -406,6 +891,8 @@ const printInvoice = () => {
     .invoice-table-wrap table {
         width: 100% !important;
         border-collapse: collapse !important;
+        break-inside: auto !important;
+        page-break-inside: auto !important;
     }
 
     .invoice-table-wrap thead {

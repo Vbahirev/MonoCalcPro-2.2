@@ -1,5 +1,5 @@
 <script setup>
-import { ref, computed, nextTick, onMounted } from 'vue';
+import { ref, computed, nextTick, onMounted, onUnmounted, watch } from 'vue';
 import { useRouter } from 'vue-router';
 import { useHaptics } from '@/composables/useHaptics';
 import { useTheme } from '@/composables/useTheme';
@@ -15,28 +15,28 @@ const ADMIN_EMAIL = 'viktor19971997@gmail.com';
 const router = useRouter();
 const { impactLight, impactMedium } = useHaptics();
 const { theme, setTheme } = useTheme(); 
-const { syncStatus, initDatabase, hasPermission, user: currentUser } = useDatabase(); 
+const { syncStatus, initDatabase, hasPermission, user: currentUser, isOfflineMode } = useDatabase(); 
 const currentYear = new Date().getFullYear();
 
 // --- СОСТОЯНИЕ ---
 const showLoginModal = ref(false);
 const showLogoutInCapsule = ref(false);
+const loginFireworks = ref([]);
+const lockLogoutCapsule = ref(false);
 
 // Статус для верхней капсулы
 const headerStatus = ref(null); 
 const statusTimeout = ref(null);
+const LOGIN_CELEBRATION_KEY = 'calpro_login_celebration';
+let loginFireworkCounter = 0;
+let loginFireworksTimer = null;
+let lastLoginFireworksAt = 0;
 
 // --- ЛОГИКА ТЕКСТА КАПСУЛЫ ---
 const capsuleText = computed(() => {
     if (headerStatus.value) return headerStatus.value;
 
-    switch (syncStatus.value) {
-        case 'syncing': return 'СИНХРОНИЗАЦИЯ...';
-        case 'success': return 'БАЗА ОБНОВЛЕНА';
-        case 'offline': return 'ОФФЛАЙН РЕЖИМ';
-        case 'error':   return 'ОШИБКА СЕТИ';
-        default:        return 'ПЕЧАТНЫЙ ДВОР';
-    }
+    return isOfflineMode.value ? 'ОФЛАЙН' : 'ПЕЧАТНЫЙ ДВОР';
 });
 
 const isAdmin = computed(() => {
@@ -46,9 +46,18 @@ const isAdmin = computed(() => {
 
 const canViewSettings = computed(() => isAdmin.value);
 const canViewHistory = computed(() => hasPermission('canSaveHistory'));
+const canUseCloudSections = computed(() => !isOfflineMode.value);
 
 onMounted(() => {
     initDatabase(); 
+});
+
+onUnmounted(() => {
+    if (statusTimeout.value) clearTimeout(statusTimeout.value);
+    if (loginFireworksTimer) {
+        clearTimeout(loginFireworksTimer);
+        loginFireworksTimer = null;
+    }
 });
 
 const showHeaderNotification = (text) => {
@@ -60,10 +69,86 @@ const showHeaderNotification = (text) => {
     }, 2500);
 };
 
+const triggerLoginFireworks = () => {
+    const palette = ['#60A5FA', '#34D399', '#F472B6', '#FBBF24', '#A78BFA', '#F87171'];
+    const salvos = 6;
+    const allParticles = [];
+
+    for (let salvoIndex = 0; salvoIndex < salvos; salvoIndex++) {
+        const salvoDelay = salvoIndex * 460 + Math.floor(Math.random() * 120);
+        const originX = Math.round((Math.random() - 0.5) * 190);
+        const originY = Math.round(-10 + Math.random() * 44);
+        const particlesCount = 10 + Math.floor(Math.random() * 8);
+
+        for (let particleIndex = 0; particleIndex < particlesCount; particleIndex++) {
+            const angleRad = (Math.random() * 360 * Math.PI) / 180;
+            const distance = 30 + Math.random() * 84;
+            allParticles.push({
+                id: `landing-burst-${Date.now()}-${loginFireworkCounter++}-${salvoIndex}-${particleIndex}`,
+                originX,
+                originY,
+                offsetX: Math.round(Math.cos(angleRad) * distance),
+                offsetY: Math.round(Math.sin(angleRad) * distance),
+                delayMs: salvoDelay + Math.floor(Math.random() * 170),
+                durationMs: 760 + Math.floor(Math.random() * 680),
+                sizePx: 3 + Math.random() * 7,
+                color: palette[Math.floor(Math.random() * palette.length)]
+            });
+        }
+    }
+
+    if (loginFireworksTimer) clearTimeout(loginFireworksTimer);
+    loginFireworks.value = allParticles;
+    loginFireworksTimer = setTimeout(() => {
+        loginFireworks.value = [];
+        loginFireworksTimer = null;
+    }, 3400);
+};
+
+const launchLoginCelebration = () => {
+    const now = Date.now();
+    if (now - lastLoginFireworksAt < 1200) return;
+    lastLoginFireworksAt = now;
+    setTimeout(() => {
+        triggerLoginFireworks();
+    }, 420);
+};
+
 const handleLoginSuccess = () => {
     showLoginModal.value = false;
+    showLogoutInCapsule.value = false;
+    lockLogoutCapsule.value = true;
+    setTimeout(() => {
+        lockLogoutCapsule.value = false;
+    }, 3600);
+    try {
+        window.sessionStorage.setItem(LOGIN_CELEBRATION_KEY, '1');
+    } catch (e) {}
+    launchLoginCelebration();
     showHeaderNotification('ВХОД ВЫПОЛНЕН');
 };
+
+const onCapsuleMouseEnter = () => {
+    if (lockLogoutCapsule.value) return;
+    showLogoutInCapsule.value = true;
+};
+
+const onCapsuleMouseLeave = () => {
+    showLogoutInCapsule.value = false;
+};
+
+watch(currentUser, (user) => {
+    if (!user) return;
+    let hasPendingCelebration = false;
+    try {
+        hasPendingCelebration = window.sessionStorage.getItem(LOGIN_CELEBRATION_KEY) === '1';
+    } catch (e) {}
+    if (!hasPendingCelebration) return;
+    try {
+        window.sessionStorage.removeItem(LOGIN_CELEBRATION_KEY);
+    } catch (e) {}
+    launchLoginCelebration();
+}, { immediate: true });
 
 const handleLogout = async () => {
     await signOut(auth);
@@ -79,7 +164,7 @@ const tags = computed(() => {
         if (!m.category) return;
         if (!map.has(m.category)) map.set(m.category, m.category);
     });
-    const labelMap = { laser: 'Лазерная резка', printing: 'Полиграфия', textile: 'Текстиль' };
+    const labelMap = { laser: 'Лазерная резка', printing: 'Полиграфия', textile: 'Текстиль', dtf: 'DTF Печать' };
     return base.concat([...map.keys()].map(id => ({ id, label: labelMap[id] || id })));
 });
 
@@ -97,8 +182,22 @@ const filteredModules = computed(() => {
 });
 
 const selectTag = (tagId) => { impactLight(); activeTag.value = tagId; };
-const openSettings = () => { impactLight(); router.push('/settings'); };
-const openHistory = () => { impactLight(); router.push('/history'); };
+const openSettings = () => {
+    impactLight();
+    if (!canUseCloudSections.value) {
+        showHeaderNotification('ОФЛАЙН: РАЗДЕЛ ВРЕМЕННО НЕДОСТУПЕН');
+        return;
+    }
+    router.push('/settings');
+};
+const openHistory = () => {
+    impactLight();
+    if (!canUseCloudSections.value) {
+        showHeaderNotification('ОФЛАЙН: РАЗДЕЛ ВРЕМЕННО НЕДОСТУПЕН');
+        return;
+    }
+    router.push('/history');
+};
 
 // --- ТЕМА ---
 const effectiveTheme = computed(() => {
@@ -135,17 +234,15 @@ const setSystemTheme = (event) => runThemeTransition(event, 'system');
         
         <div class="relative h-8 w-64 mb-4 backdrop-blur-sm border rounded-full shadow-sm overflow-hidden flex items-center justify-center transition-colors duration-500"
              :class="{
-                'bg-green-50/50 dark:bg-green-900/10 border-green-500/30': syncStatus === 'success' && !headerStatus,
-                'bg-blue-50/50 dark:bg-blue-900/10 border-blue-500/30': syncStatus === 'syncing' && !headerStatus,
-                'bg-white/60 dark:bg-white/5 border-gray-200/60 dark:border-white/10': !['success', 'syncing'].includes(syncStatus) || headerStatus
+                     'bg-red-50/60 dark:bg-red-900/20 border-red-400/40': isOfflineMode && !headerStatus,
+                     'bg-white/60 dark:bg-white/5 border-gray-200/60 dark:border-white/10': !isOfflineMode || headerStatus
              }">
             <Transition name="clock-scroll" mode="out-in">
                 <div :key="capsuleText" class="absolute w-full text-center">
                     <h2 class="text-[10px] md:text-xs font-black uppercase tracking-[0.25em] whitespace-nowrap transition-colors duration-300"
                         :class="{
-                            'text-green-600 dark:text-green-400': syncStatus === 'success' && !headerStatus,
-                            'text-blue-500 dark:text-blue-400': syncStatus === 'syncing' && !headerStatus,
-                            'text-gray-400 dark:text-gray-500': !['success', 'syncing'].includes(syncStatus) || headerStatus
+                            'text-red-500 dark:text-red-300': isOfflineMode && !headerStatus,
+                            'text-gray-400 dark:text-gray-500': !isOfflineMode || headerStatus
                         }">
                         {{ capsuleText }}
                     </h2>
@@ -169,6 +266,26 @@ const setSystemTheme = (event) => runThemeTransition(event, 'system');
         </p>
 
         <div class="w-full flex flex-col items-center justify-center min-h-[90px] mb-8 relative z-30">
+            <div class="absolute inset-0 pointer-events-none flex items-center justify-center" aria-hidden="true">
+                <div class="landing-fireworks-stage">
+                    <span
+                        v-for="particle in loginFireworks"
+                        :key="particle.id"
+                        class="landing-firework-dot"
+                        :style="{
+                            '--bx': `${particle.originX}px`,
+                            '--by': `${particle.originY}px`,
+                            '--tx': `${particle.offsetX}px`,
+                            '--ty': `${particle.offsetY}px`,
+                            '--delay': `${particle.delayMs}ms`,
+                            '--duration': `${particle.durationMs}ms`,
+                            '--size': `${particle.sizePx}px`,
+                            '--dot-color': particle.color
+                        }"
+                    ></span>
+                </div>
+            </div>
+
             <Transition name="fade-slide" mode="out-in">
                 
                 <div v-if="!currentUser" key="login">
@@ -198,8 +315,8 @@ const setSystemTheme = (event) => runThemeTransition(event, 'system');
                     <div class="relative flex items-center justify-center w-full animate-fade-in-up delay-100">
                         <div
                             class="w-full max-w-[340px]"
-                            @mouseenter="showLogoutInCapsule = true"
-                            @mouseleave="showLogoutInCapsule = false"
+                            @mouseenter="onCapsuleMouseEnter"
+                            @mouseleave="onCapsuleMouseLeave"
                         >
                             <div class="flex items-center gap-3 pl-2 pr-4 py-2 bg-white/50 dark:bg-[#1C1C1E]/50 backdrop-blur-md rounded-full border border-white/20 dark:border-white/5 shadow-sm">
                                 <div class="w-10 h-10 rounded-full bg-black dark:bg-white text-white dark:text-black flex items-center justify-center font-black text-sm uppercase shadow-inner shrink-0">
@@ -232,11 +349,12 @@ const setSystemTheme = (event) => runThemeTransition(event, 'system');
 
                     <div class="relative z-20 flex flex-wrap justify-center gap-4">
                         
-                        <button v-if="canViewSettings"
+                                                <button v-if="canViewSettings"
                           @click="openSettings"
+                                                    :disabled="!canUseCloudSections"
                           class="group flex items-center gap-3 w-40 pl-1.5 pr-4 py-1.5 bg-[#1d1d1f] dark:bg-[#1C1C1E] text-white dark:text-white rounded-full shadow-lg border border-transparent dark:border-white/10
                                  will-change-transform transform-gpu transition-transform duration-300 ease-out 
-                                 hover:scale-105 active:scale-95 cursor-pointer"
+                                                                 hover:scale-105 active:scale-95 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
                         >
                             <div class="w-10 h-10 rounded-full bg-white/10 dark:bg-white/10 flex items-center justify-center text-white dark:text-white border border-white/5 dark:border-white/5 shrink-0">
                                 <svg class="transition-transform duration-500 group-hover:rotate-90" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
@@ -247,11 +365,12 @@ const setSystemTheme = (event) => runThemeTransition(event, 'system');
                             </div>
                         </button>
 
-                        <button v-if="canViewHistory"
+                                                <button v-if="canViewHistory"
                           @click="openHistory"
+                                                    :disabled="!canUseCloudSections"
                           class="group flex items-center gap-3 w-40 pl-1.5 pr-4 py-1.5 bg-[#1d1d1f] dark:bg-[#1C1C1E] text-white dark:text-white rounded-full shadow-lg border border-transparent dark:border-white/10
                                  will-change-transform transform-gpu transition-transform duration-300 ease-out 
-                                 hover:scale-105 active:scale-95 cursor-pointer"
+                                                                 hover:scale-105 active:scale-95 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
                         >
                             <div class="w-10 h-10 rounded-full bg-white/10 dark:bg-white/10 flex items-center justify-center text-white dark:text-white border border-white/5 dark:border-white/5 shrink-0">
                                 <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -453,5 +572,43 @@ body {
 }
 ::view-transition-old(root) {
   z-index: 1;
+}
+
+.landing-fireworks-stage {
+    position: relative;
+    width: 300px;
+    height: 140px;
+}
+
+.landing-firework-dot {
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    width: var(--size);
+    height: var(--size);
+    border-radius: 9999px;
+    background: var(--dot-color);
+    opacity: 0;
+    box-shadow: 0 0 10px color-mix(in oklab, var(--dot-color) 70%, white 30%);
+    transform: translate(calc(-50% + var(--bx)), calc(-50% + var(--by))) scale(0.3);
+    animation: landing-firework-burst var(--duration) cubic-bezier(0.16, 1, 0.3, 1) forwards;
+    animation-delay: var(--delay);
+}
+
+@keyframes landing-firework-burst {
+    0% {
+        opacity: 0;
+        transform: translate(calc(-50% + var(--bx)), calc(-50% + var(--by))) scale(0.2);
+    }
+    12% {
+        opacity: 1;
+    }
+    55% {
+        opacity: 0.9;
+    }
+    100% {
+        opacity: 0;
+        transform: translate(calc(-50% + var(--bx) + var(--tx)), calc(-50% + var(--by) + var(--ty))) scale(0.15);
+    }
 }
 </style>

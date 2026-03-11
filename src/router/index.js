@@ -1,7 +1,11 @@
-import { createRouter, createWebHistory } from 'vue-router'
+import { createRouter, createWebHashHistory, createWebHistory } from 'vue-router'
+
+const isGitHubPages = typeof window !== 'undefined' && window.location.hostname.endsWith('github.io')
 
 const router = createRouter({
-  history: createWebHistory(import.meta.env.BASE_URL),
+  history: isGitHubPages
+    ? createWebHashHistory(import.meta.env.BASE_URL)
+    : createWebHistory(import.meta.env.BASE_URL),
   routes: [
     {
       path: '/',
@@ -9,13 +13,12 @@ const router = createRouter({
       component: () => import('../views/LandingPage.vue')
     },
     {
-      path: '/calc/laser', // Явный путь для калькулятора лазера
-      name: 'calculator-laser',
+      path: '/calc/:id',
+      name: 'calculator',
       component: () => import('../views/MainCalculator.vue')
     },
-    // Редиректы для старых ссылок
-    { path: '/calc/:id', redirect: to => `/calc/${to.params.id}` }, 
     { path: '/laser', redirect: '/calc/laser' },
+    { path: '/dtf', redirect: '/calc/dtf' },
 
     {
       path: '/history',
@@ -35,9 +38,21 @@ const router = createRouter({
       component: () => import('../views/LaserSettings.vue')
     },
     {
+      path: '/settings/dtf',
+      name: 'settings-dtf',
+      component: () => import('../views/DtfSettings.vue')
+    },
+    {
       path: '/settings/trash',
       name: 'settings-trash',
       component: () => import('../views/TrashView.vue')
+    },
+
+    // --- Архив удалённых данных ---
+    {
+      path: '/settings/archive',
+      name: 'settings-archive',
+      component: () => import('../views/ArchiveView.vue')
     },
 
     // --- Администрирование: структура данных (STEP 1-4) ---

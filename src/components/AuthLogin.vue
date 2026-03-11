@@ -61,6 +61,9 @@ const handleGoogleLogin = async () => {
         );
 
         if (isPopupIssue) {
+            try {
+                window.sessionStorage.setItem('calpro_login_celebration', '1');
+            } catch (err) {}
             await signInWithRedirect(auth, provider);
             return;
         }

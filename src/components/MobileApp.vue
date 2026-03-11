@@ -1,6 +1,6 @@
 <script setup>
 import { ref, computed, onMounted, nextTick } from 'vue';
-import { useRouter } from 'vue-router';
+import { useRouter, useRoute } from 'vue-router';
 import { useCalculator } from '@/core/useCalculator';
 import { useHaptics } from '@/composables/useHaptics';
 import { useDatabase } from '@/composables/useDatabase'; // <--- Импорт базы
@@ -9,6 +9,7 @@ import ModernSelect from './ModernSelect.vue';
 import AnimatedIcon from './mobile/AnimatedIcon.vue';
 import AuthLogin from './AuthLogin.vue'; // <--- Импорт окна входа
 import { isCoatingAllowedForMaterial } from '@/utils/coatingCompatibility';
+import { COATING_PRICING_MODE_DTF_LINEAR, getCoatingPricePerCm2 } from '@/utils/coatingPricing';
 
 const props = defineProps({
   calculatorId: { type: [String, Object], default: 'laser' }
@@ -29,10 +30,12 @@ const {
 
 const { impactLight, impactMedium, notificationSuccess, notificationError } = useHaptics();
 const router = useRouter();
+const route = useRoute();
 
 const activePage = ref('layers');
 const showPageMenu = ref(false); 
 const showAuthModal = ref(false); // <--- Для модалки входа
+const showMobileDevModal = ref(true);
 const scrollContainer = ref(null);
 
 // Состояния для анимаций
@@ -95,11 +98,11 @@ const onSheetTouchEnd = () => {
 const handleAddNew = async (type) => {
     impactMedium();
     let newItem = null;
-    if (type === 'layers') { addLayer(); newItem = layers.value[layers.value.length - 1]; }
-    else if (type === 'processing') { addProcessing(); newItem = processing.value[processing.value.length - 1]; }
-    else if (type === 'accessories') { addAccessory(); newItem = accessories.value[accessories.value.length - 1]; }
-    else if (type === 'packaging') { addPackaging(); newItem = packaging.value[packaging.value.length - 1]; }
-    else if (type === 'design') { addDesign(); newItem = design.value[design.value.length - 1]; }
+    if (type === 'layers') { addLayer(); newItem = layers.value[0]; }
+    else if (type === 'processing') { newItem = addProcessing(); }
+    else if (type === 'accessories') { newItem = addAccessory(); }
+    else if (type === 'packaging') { newItem = addPackaging(); }
+    else if (type === 'design') { newItem = addDesign(); }
 
     if (newItem) {
         newlyAddedId.value = newItem.id;
@@ -209,6 +212,12 @@ const onLoginSuccess = () => {
     notificationSuccess();
 };
 
+const openDesktopVersion = () => {
+    impactMedium();
+    const nextQuery = { ...route.query, view: 'desktop' };
+    router.replace({ path: route.path, query: nextQuery });
+};
+
 onMounted(() => { init(); });
 
 const pages = [
@@ -219,6 +228,7 @@ const pages = [
     { id: 'design', label: 'Макет', icon: 'design' },
     { id: 'total', label: 'Смета', icon: 'total' },
 ];
+const DEFAULT_PACKAGING_ROLL_WIDTH_MM = 500;
 
 const currentPageLabel = computed(() => pages.find(p => p.id === activePage.value)?.label);
 
@@ -235,8 +245,7 @@ const handleDuplicateLayer = (layer) => {
     const newLayer = JSON.parse(JSON.stringify(layer)); 
     newLayer.id = Date.now() + Math.random(); 
     newLayer.name = `${newLayer.name} (Копия)`;
-    const idx = layers.value.findIndex(l => l.id === layer.id); 
-    layers.value.splice(idx + 1, 0, newLayer);
+    layers.value.unshift(newLayer);
     newlyAddedId.value = newLayer.id;
     setTimeout(() => newlyAddedId.value = null, 600);
     addToast('Скопировано');
@@ -246,7 +255,29 @@ const copyToClipboard = async () => { await triggerAutoSave(); const t = `ЗАК
 const confirmReset = () => { if(confirm('Сброс?')) { resetAll(); notificationSuccess(); addToast('Очищено'); } };
 
 // Helpers
-const mapOptions = (list) => list.map(i => ({ value: i.id, label: i.name, sub: `${i.price||i.value} ₽` }));
+const isAvailableItem = (item) => (item?.inStock !== false) && (item?.active !== false);
+const hasSelectedDbItem = (item) => Boolean(item?.dbId);
+const applyMarkup = (value, markupPercent) => {
+    const amount = Number(value) || 0;
+    const pct = Math.max(0, Number(markupPercent) || 0);
+    return amount * (1 + pct / 100);
+};
+const usesValueField = (type) => type === 'fixed' || type === 'percent';
+const mapOptions = (list) => [...(list || [])].filter(isAvailableItem).reverse().map(i => {
+    const markup = Math.max(0, Number(i?.markupPercent) || 0);
+    const finalPrice = Math.round(applyMarkup(i.price || i.value, markup));
+    const finalPercent = Math.round(applyMarkup(i.price ?? i.value ?? 0, markup));
+    if (i?.type === 'percent') {
+        return { value: i.id, label: i.name, sub: `${finalPercent}%` };
+    }
+    if (i?.type === 'roll') {
+        const width = Number(i?.rollWidthMm || i?.rollWidth) || 0;
+        return { value: i.id, label: i.name, sub: `${finalPrice} ₽/пог.м${width > 0 ? ` • ${width}мм` : ''}` };
+    }
+    if (i?.type === 'area_cm2') return { value: i.id, label: i.name, sub: `${finalPrice} ₽/см²` };
+    if (i?.type === 'box_mm') return { value: i.id, label: i.name, sub: `${finalPrice} ₽/м²` };
+    return { value: i.id, label: i.name, sub: `${finalPrice} ₽` };
+});
 const processingOptions = computed(() => mapOptions(processingDB.value));
 const accessoryOptions = computed(() => mapOptions(accessoriesDB.value));
 const packagingOptions = computed(() => mapOptions(packagingDB.value));
@@ -254,10 +285,60 @@ const designOptions = computed(() => mapOptions(designDB.value));
 const getFinishingOptions = (matId) => {
     const material = materials.value.find(m => m.id === matId);
     return coatings.value
+    .filter(coating => coating?.inStock !== false)
+        .filter(coating => coating?.pricingModel !== COATING_PRICING_MODE_DTF_LINEAR)
         .filter(coating => isCoatingAllowedForMaterial(coating, material))
-        .map(c => ({ value: c.id, label: c.name, sub: c.price > 0 ? `${c.price} ₽/м²` : '' }));
+        .map(c => {
+            const pricePerCm2 = getCoatingPricePerCm2(c);
+            const printable = pricePerCm2 >= 1 ? pricePerCm2.toFixed(2) : pricePerCm2.toFixed(3);
+            return ({ value: c.id, label: c.name, sub: pricePerCm2 > 0 ? `${printable} ₽/см²` : '' });
+        });
 };
-const onSelectChange = (item, dbList, val) => { const dbItem = dbList.find(i => i.id === val); if(dbItem) { item.dbId = val; item.name = dbItem.name; item.type = dbItem.type || 'fixed'; if(item.price !== undefined) item.price = dbItem.price || dbItem.value || 0; if(item.value !== undefined) item.value = dbItem.value || 0; } };
+const onSelectChange = (item, dbList, val) => {
+    const dbItem = dbList.find(i => i.id === val);
+    if (dbItem) {
+        const markup = Math.max(0, Number(dbItem?.markupPercent) || 0);
+        const nextType = dbItem.type || 'fixed';
+        const nextPrice = applyMarkup(dbItem.price ?? dbItem.value ?? 0, markup);
+        const nextValue = nextType === 'percent'
+            ? applyMarkup(dbItem.price ?? dbItem.value ?? 0, markup)
+            : applyMarkup(dbItem.value ?? dbItem.price ?? 0, markup);
+        item.dbId = val;
+        item.name = dbItem.name;
+        item.type = nextType;
+        item.value = usesValueField(nextType) ? nextValue : null;
+        item.price = usesValueField(nextType) ? null : nextPrice;
+        if (dbItem.rollWidthMm || dbItem.rollWidth) {
+            item.rollWidthMm = Number(dbItem.rollWidthMm || dbItem.rollWidth) || DEFAULT_PACKAGING_ROLL_WIDTH_MM;
+        }
+    }
+};
+const amountLabel = (type) => {
+    if (type === 'percent') return 'Процент';
+    if (type === 'roll') return 'Цена за пог.м';
+    if (type === 'linear') return 'Цена за м';
+    if (type === 'linear_mm') return 'Цена за мм';
+    if (type === 'area') return 'Цена за м²';
+    if (type === 'area_cm2') return 'Цена за см²';
+    if (type === 'area_mm2') return 'Цена за мм²';
+    if (type === 'box_mm') return 'Цена за м²';
+    return 'Цена';
+};
+const formatSystemPrice = (value, suffix = '₽') => {
+    const amount = Number(value) || 0;
+    if (amount <= 0) return `0 ${suffix}`;
+    const digits = amount >= 1 ? 2 : 4;
+    return `${amount.toFixed(digits)} ${suffix}`;
+};
+const getProcessingSystemPriceValue = (item) => {
+    if (!item?.dbId) return formatSystemPrice(item?.price, '₽/см²');
+    const dbItem = (processingDB.value || []).find(entry => entry?.id === item.dbId);
+    if (!dbItem) return formatSystemPrice(item?.price, '₽/см²');
+    const markup = Math.max(0, Number(dbItem?.markupPercent) || 0);
+    const price = applyMarkup(dbItem?.price ?? dbItem?.value ?? 0, markup);
+    return formatSystemPrice(price, '₽/см²');
+};
+const normalizeSides = (value) => (Number(value) === 2 ? 2 : 1);
 const stepUp = (obj, key) => { obj[key] = (parseFloat(obj[key]) || 0) + 1; impactLight(); };
 const stepDown = (obj, key) => { const v = (parseFloat(obj[key]) || 0) - 1; obj[key] = v < 1 ? 1 : v; impactLight(); };
 const autoCalcArea = () => { if(editingItem.value.w && editingItem.value.h) { editingItem.value.area = Math.round((editingItem.value.w * editingItem.value.h) / 100 * 10) / 10; } else { editingItem.value.area = 0; } };
@@ -273,6 +354,28 @@ const onBarTouchEnd = (e) => { const diff = e.changedTouches[0].clientX - barTou
 
 <template>
     <div class="fixed inset-0 bg-[#F5F5F7] font-sans overflow-hidden text-[#1d1d1f]">
+        <Transition name="mobile-dev-modal">
+            <div v-if="showMobileDevModal" class="fixed inset-0 z-[12000] bg-black/55 backdrop-blur-md p-5 flex items-center justify-center">
+                <div class="w-full max-w-sm rounded-[2rem] bg-white border border-white/70 shadow-[0_30px_80px_-24px_rgba(0,0,0,0.6)] overflow-hidden">
+                    <div class="px-6 pt-6 pb-4 bg-gradient-to-br from-neutral-900 via-neutral-800 to-neutral-700 text-white">
+                        <div class="w-12 h-12 rounded-2xl bg-white/10 border border-white/20 flex items-center justify-center mb-4">
+                            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path><line x1="12" y1="9" x2="12" y2="13"></line><line x1="12" y1="17" x2="12.01" y2="17"></line></svg>
+                        </div>
+                        <h2 class="text-2xl font-black tracking-tight leading-tight">Мобильная версия в разработке</h2>
+                        <p class="mt-2 text-sm text-white/75 font-medium">Для стабильной работы перейдите в desktop-версию сайта.</p>
+                    </div>
+
+                    <div class="p-5 space-y-3">
+                        <button @click="openDesktopVersion" class="w-full h-12 rounded-2xl bg-black text-white font-bold text-sm tracking-wide shadow-lg active:scale-[0.98] transition-transform">
+                            Перейти в Desktop версию
+                        </button>
+                        <button @click="showMobileDevModal = false; impactLight()" class="w-full h-11 rounded-2xl bg-gray-100 text-gray-700 font-bold text-sm active:scale-[0.98] transition-transform">
+                            Остаться в мобильной
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </Transition>
         
         <div class="h-full w-full transition-all duration-500 ease-[cubic-bezier(0.32,0.72,0,1)] origin-bottom will-change-transform bg-[#F5F5F7]"
              :class="showPageMenu || editingItem ? 'scale-[0.92] opacity-80 brightness-95 rounded-[2rem] overflow-hidden translate-y-4 shadow-2xl pointer-events-none' : ''">
@@ -360,7 +463,17 @@ const onBarTouchEnd = (e) => { const diff = e.changedTouches[0].clientX - barTou
                                         <div class="flex flex-col">
                                             <span class="font-bold text-sm text-gray-900">{{ item.name || 'Выберите...' }}</span>
                                             <span class="text-[11px] font-bold text-gray-400 mt-0.5">
-                                                {{ item.type === 'percent' ? item.value + '%' : (item.price || 0) + ' ₽' }}
+                                                {{
+                                                    item.type === 'percent'
+                                                        ? `${item.value || 0}%`
+                                                        : item.type === 'area_cm2'
+                                                            ? `${item.price || 0} ₽/см²`
+                                                        : item.type === 'roll'
+                                                            ? `${item.price || 0} ₽/пог.м`
+                                                            : item.type === 'box_mm'
+                                                                ? `${item.price || 0} ₽/м²`
+                                                                : `${item.price || 0} ₽`
+                                                }}
                                             </span>
                                         </div>
                                         <div class="px-3 py-1 bg-gray-100 rounded-lg text-black font-black text-xs">
@@ -508,7 +621,7 @@ const onBarTouchEnd = (e) => { const diff = e.changedTouches[0].clientX - barTou
                         <div class="bg-white rounded-2xl p-4 shadow-sm border border-gray-100 flex flex-col gap-3">
                             <div class="flex items-center justify-between gap-3">
                                 <div class="flex-1 min-w-0">
-                                    <label class="text-[9px] font-bold text-gray-400 uppercase block mb-1">Название</label>
+                                    <label class="text-[10px] font-bold text-gray-400 uppercase block mb-1">Название</label>
                                     <input v-model="editingItem.name" class="w-full text-lg font-black bg-transparent outline-none placeholder-gray-300 text-black truncate" placeholder="Деталь" @focus="selectAll">
                                 </div>
                                 <div class="flex items-center bg-[#F2F2F7] rounded-xl p-1 gap-2 shrink-0">
@@ -518,7 +631,7 @@ const onBarTouchEnd = (e) => { const diff = e.changedTouches[0].clientX - barTou
                                 </div>
                             </div>
                             <div class="pt-2 border-t border-gray-50">
-                                <label class="text-[9px] font-bold text-gray-400 uppercase block mb-1">Материал</label>
+                                <label class="text-[10px] font-bold text-gray-400 uppercase block mb-1">Материал</label>
                                 <ModernSelect v-model="editingItem.matId" :grouped="materialGroups" placeholder="Выберите материал" class="w-full" />
                             </div>
                         </div>
@@ -526,15 +639,15 @@ const onBarTouchEnd = (e) => { const diff = e.changedTouches[0].clientX - barTou
                         <div class="bg-white rounded-2xl p-2 shadow-sm border border-gray-100 flex items-stretch h-20">
                             <div class="flex-1 flex flex-col items-center justify-center border-r border-gray-100">
                                 <input v-model.number="editingItem.w" @input="autoCalcArea" @focus="selectAll" type="number" class="w-full text-center font-black text-xl bg-transparent outline-none" placeholder="Ш">
-                                <span class="text-[9px] font-bold text-gray-400 uppercase mt-1">Ширина</span>
+                                <span class="text-[10px] font-bold text-gray-400 uppercase mt-1">Ширина</span>
                             </div>
                             <div class="flex-1 flex flex-col items-center justify-center border-r border-gray-100">
                                 <input v-model.number="editingItem.h" @input="autoCalcArea" @focus="selectAll" type="number" class="w-full text-center font-black text-xl bg-transparent outline-none" placeholder="В">
-                                <span class="text-[9px] font-bold text-gray-400 uppercase mt-1">Высота</span>
+                                <span class="text-[10px] font-bold text-gray-400 uppercase mt-1">Высота</span>
                             </div>
                             <div class="flex-[1.2] flex flex-col items-center justify-center bg-blue-50/50 rounded-xl m-1">
                                  <input v-model.number="editingItem.area" type="number" @focus="selectAll" class="w-full text-center font-black text-xl bg-transparent outline-none text-blue-600" placeholder="S">
-                                 <span class="text-[9px] font-bold text-blue-400 uppercase mt-1">Площадь</span>
+                                 <span class="text-[10px] font-bold text-blue-400 uppercase mt-1">Площадь</span>
                             </div>
                         </div>
 
@@ -563,25 +676,89 @@ const onBarTouchEnd = (e) => { const diff = e.changedTouches[0].clientX - barTou
 
                     <div v-else class="flex flex-col gap-4">
                          <div class="bg-white rounded-2xl p-4 shadow-sm border border-gray-100">
-                            <label class="text-[9px] font-bold text-gray-400 uppercase block mb-1">Наименование</label>
+                            <label class="text-[10px] font-bold text-gray-400 uppercase block mb-1">Наименование</label>
                             <ModernSelect v-model="editingItem.dbId" 
                                           :options="editingType==='processing'?processingOptions:editingType==='accessories'?accessoryOptions:editingType==='packaging'?packagingOptions:designOptions" 
                                           @update:modelValue="val => onSelectChange(editingItem, editingType==='processing'?processingDB:editingType==='accessories'?accessoriesDB:editingType==='packaging'?packagingDB:designDB, val)" 
                                           placeholder="Выберите..." />
                         </div>
-                        <div class="flex gap-3">
+                        <div v-if="hasSelectedDbItem(editingItem)" class="flex gap-3">
                             <div class="flex-1 min-w-0 bg-white border border-gray-100 h-16 rounded-2xl flex flex-col justify-center px-4 shadow-sm">
-                                <label class="text-[9px] font-bold text-gray-400 uppercase block mb-0.5">{{ editingItem.type === 'percent' ? 'Процент' : 'Цена' }}</label>
+                                <label class="text-[10px] font-bold text-gray-400 uppercase block mb-0.5">{{ amountLabel(editingItem.type) }}</label>
                                 <div class="flex items-baseline">
-                                    <input v-if="editingItem.type === 'percent'" v-model.number="editingItem.value" @focus="selectAll" type="number" class="w-full bg-transparent font-black outline-none text-xl" placeholder="0">
+                                    <input v-if="usesValueField(editingItem.type)" v-model.number="editingItem.value" @focus="selectAll" type="number" class="w-full bg-transparent font-black outline-none text-xl" placeholder="0">
+                                    <div v-else-if="editingType === 'processing' && editingItem.type === 'area_cm2'" class="w-full text-xl font-black text-gray-900">{{ getProcessingSystemPriceValue(editingItem) }}</div>
                                     <input v-else v-model.number="editingItem.price" @focus="selectAll" type="number" class="w-full bg-transparent font-black outline-none text-xl" placeholder="0">
-                                    <span class="text-xs font-bold text-gray-400 ml-1">{{ editingItem.type === 'percent' ? '%' : '₽' }}</span>
+                                    <span v-if="!(editingType === 'processing' && editingItem.type === 'area_cm2')" class="text-xs font-bold text-gray-400 ml-1">{{ editingItem.type === 'percent' ? '%' : '₽' }}</span>
                                 </div>
                             </div>
                             <div v-if="editingItem.type !== 'fixed' && editingItem.type !== 'percent'" class="flex-1 min-w-0 flex h-16 bg-white border border-gray-100 rounded-2xl overflow-hidden items-center shadow-sm">
                                 <button @click="stepDown(editingItem, 'qty')" class="w-12 h-full flex items-center justify-center font-bold text-xl text-gray-400 active:text-black shrink-0">-</button>
                                 <input v-model.number="editingItem.qty" @focus="selectAll" type="number" class="flex-1 w-0 bg-transparent text-center font-black outline-none text-xl">
                                 <button @click="stepUp(editingItem, 'qty')" class="w-12 h-full flex items-center justify-center font-bold text-xl text-gray-400 active:text-black shrink-0">+</button>
+                            </div>
+                        </div>
+
+                        <div v-else class="h-16 rounded-2xl border border-dashed border-gray-200 bg-white px-4 text-center text-[11px] font-bold uppercase tracking-[0.12em] text-gray-400 shadow-sm flex items-center justify-center">
+                            Сначала выберите позицию из списка
+                        </div>
+
+                        <div v-if="hasSelectedDbItem(editingItem) && editingType === 'processing' && (editingItem.type === 'linear' || editingItem.type === 'linear_mm' || editingItem.type === 'roll')" class="bg-white border border-gray-100 rounded-2xl p-3 shadow-sm">
+                            <label class="text-[10px] font-bold text-gray-400 uppercase block mb-1">Длина</label>
+                            <div class="flex items-baseline">
+                                <input v-model.number="editingItem.length" @focus="selectAll" type="number" class="w-full h-11 rounded-xl bg-[#F2F2F7] px-4 font-black outline-none" placeholder="0">
+                                <span class="text-xs font-bold text-gray-400 ml-2">мм</span>
+                            </div>
+                        </div>
+
+                        <div v-if="hasSelectedDbItem(editingItem) && editingType === 'processing' && (editingItem.type === 'area' || editingItem.type === 'area_cm2' || editingItem.type === 'area_mm2')" class="bg-white border border-gray-100 rounded-2xl p-3 shadow-sm grid grid-cols-2 gap-2">
+                            <div>
+                                <label class="text-[10px] font-bold text-gray-400 uppercase block mb-1">Ширина</label>
+                                <input v-model.number="editingItem.w" @focus="selectAll" type="number" class="w-full h-11 rounded-xl bg-[#F2F2F7] text-center font-black outline-none" placeholder="0">
+                            </div>
+                            <div>
+                                <label class="text-[10px] font-bold text-gray-400 uppercase block mb-1">Высота</label>
+                                <input v-model.number="editingItem.h" @focus="selectAll" type="number" class="w-full h-11 rounded-xl bg-[#F2F2F7] text-center font-black outline-none" placeholder="0">
+                            </div>
+                        </div>
+
+                        <div v-if="hasSelectedDbItem(editingItem) && editingType === 'processing' && editingItem.type === 'area_cm2'" class="bg-white border border-gray-100 rounded-2xl p-3 shadow-sm">
+                            <label class="text-[10px] font-bold text-gray-400 uppercase block mb-2">Стороны печати</label>
+                            <div class="grid grid-cols-2 gap-2">
+                                <button type="button" @click="editingItem.sides = 1" class="h-11 rounded-xl border text-sm font-black transition-colors" :class="normalizeSides(editingItem.sides) === 1 ? 'bg-black text-white border-black' : 'bg-[#F2F2F7] text-gray-600 border-transparent'">1 сторона</button>
+                                <button type="button" @click="editingItem.sides = 2" class="h-11 rounded-xl border text-sm font-black transition-colors" :class="normalizeSides(editingItem.sides) === 2 ? 'bg-black text-white border-black' : 'bg-[#F2F2F7] text-gray-600 border-transparent'">2 стороны</button>
+                            </div>
+                        </div>
+
+                        <div v-if="hasSelectedDbItem(editingItem) && editingType === 'packaging' && editingItem.type === 'roll'" class="grid grid-cols-2 gap-3">
+                            <div class="bg-white border border-gray-100 h-16 rounded-2xl flex flex-col justify-center px-4 shadow-sm">
+                                <label class="text-[10px] font-bold text-gray-400 uppercase block mb-0.5">Ширина рулона</label>
+                                <div class="flex items-baseline">
+                                    <input v-model.number="editingItem.rollWidthMm" @focus="selectAll" type="number" class="w-full bg-transparent font-black outline-none text-xl" placeholder="500">
+                                    <span class="text-xs font-bold text-gray-400 ml-1">мм</span>
+                                </div>
+                            </div>
+                            <div class="bg-white border border-gray-100 h-16 rounded-2xl flex flex-col justify-center px-4 shadow-sm">
+                                <label class="text-[10px] font-bold text-gray-400 uppercase block mb-0.5">Длина</label>
+                                <div class="flex items-baseline">
+                                    <input v-model.number="editingItem.length" @focus="selectAll" type="number" class="w-full bg-transparent font-black outline-none text-xl" placeholder="0">
+                                    <span class="text-xs font-bold text-gray-400 ml-1">мм</span>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div v-if="hasSelectedDbItem(editingItem) && editingType === 'packaging' && editingItem.type === 'box_mm'" class="bg-white border border-gray-100 rounded-2xl p-3 shadow-sm grid grid-cols-3 gap-2">
+                            <div>
+                                <label class="text-[10px] font-bold text-gray-400 uppercase block mb-1">Ширина</label>
+                                <input v-model.number="editingItem.w" @focus="selectAll" type="number" class="w-full h-11 rounded-xl bg-[#F2F2F7] text-center font-black outline-none" placeholder="0">
+                            </div>
+                            <div>
+                                <label class="text-[10px] font-bold text-gray-400 uppercase block mb-1">Длина</label>
+                                <input v-model.number="editingItem.l" @focus="selectAll" type="number" class="w-full h-11 rounded-xl bg-[#F2F2F7] text-center font-black outline-none" placeholder="0">
+                            </div>
+                            <div>
+                                <label class="text-[10px] font-bold text-gray-400 uppercase block mb-1">Высота</label>
+                                <input v-model.number="editingItem.h" @focus="selectAll" type="number" class="w-full h-11 rounded-xl bg-[#F2F2F7] text-center font-black outline-none" placeholder="0">
                             </div>
                         </div>
                     </div>
@@ -671,4 +848,7 @@ const onBarTouchEnd = (e) => { const diff = e.changedTouches[0].clientX - barTou
 .toast-stack-enter-from { opacity: 0; transform: translateY(20px) scale(0.9); }
 .toast-stack-leave-to { opacity: 0; transform: translateY(-20px) scale(0.9); }
 .toast-stack-move { transition: transform 0.4s ease; }
+
+.mobile-dev-modal-enter-active, .mobile-dev-modal-leave-active { transition: opacity 0.22s ease; }
+.mobile-dev-modal-enter-from, .mobile-dev-modal-leave-to { opacity: 0; }
 </style>

@@ -2,24 +2,26 @@
 import { computed, ref } from 'vue';
 
 const props = defineProps({
-    totals: { type: Object, required: true }
+    totals: { type: Object, required: true },
+    costRevealed: { type: Boolean, default: false }
 });
+const emit = defineEmits(['toggle-cost-visibility']);
 
 const hoveredSegment = ref(null);
 
 // МОНОХРОМНАЯ ПАЛИТРА
 const categories = [
-    { key: 'layers', bg: 'bg-black dark:bg-zinc-100', label: 'Материалы' },
-    { key: 'processing', bg: 'bg-zinc-600 dark:bg-zinc-200', label: 'Пост-обработка' },
-    { key: 'accessories', bg: 'bg-zinc-400 dark:bg-zinc-300', label: 'Аксессуары' },
-    { key: 'packaging', bg: 'bg-zinc-300 dark:bg-zinc-400', label: 'Упаковка' },
-    { key: 'design', bg: 'bg-zinc-200 dark:bg-zinc-500', label: 'Дизайн' }
+    { key: 'costLayers', fallbackKey: 'layers', bg: 'bg-black dark:bg-zinc-100', label: 'Материалы' },
+    { key: 'costProcessing', fallbackKey: 'processing', bg: 'bg-zinc-600 dark:bg-zinc-200', label: 'Пост-обработка' },
+    { key: 'costAccessories', fallbackKey: 'accessories', bg: 'bg-zinc-400 dark:bg-zinc-300', label: 'Аксессуары' },
+    { key: 'costPackaging', fallbackKey: 'packaging', bg: 'bg-zinc-300 dark:bg-zinc-400', label: 'Упаковка' },
+    { key: 'costDesign', fallbackKey: 'design', bg: 'bg-zinc-200 dark:bg-zinc-500', label: 'Дизайн' }
 ];
 
 const chartData = computed(() => {
     const data = categories.map(cat => ({
         ...cat,
-        value: props.totals[cat.key] || 0
+        value: Number(props.totals?.[cat.key] ?? props.totals?.[cat.fallbackKey] ?? 0) || 0
     })).filter(item => item.value > 0);
 
     const total = data.reduce((sum, item) => sum + item.value, 0);
@@ -43,7 +45,9 @@ const chartData = computed(() => {
 });
 
 const totalSum = computed(() => {
-    return categories.reduce((sum, cat) => sum + (props.totals[cat.key] || 0), 0);
+    const fromTotals = Number(props.totals?.costTotal);
+    if (Number.isFinite(fromTotals) && fromTotals > 0) return fromTotals;
+    return categories.reduce((sum, cat) => sum + (Number(props.totals?.[cat.key] ?? props.totals?.[cat.fallbackKey] ?? 0) || 0), 0);
 });
 </script>
 
@@ -53,10 +57,14 @@ const totalSum = computed(() => {
          v-if="totalSum > 0"
          @mouseleave="hoveredSegment = null">
         
-        <div class="flex justify-between items-end mb-3 px-1">
+        <div
+            class="flex justify-between items-end mb-3 px-1 transition-all duration-200"
+            :class="costRevealed ? '' : 'cost-spoiler cursor-pointer'"
+            @click="emit('toggle-cost-visibility')"
+        >
             <span class="text-[10px] font-bold uppercase tracking-widest text-gray-400">Себестоимость</span>
             <div class="flex items-baseline gap-1.5">
-                <span class="text-2xl font-black tracking-tight leading-none text-[#18181B] dark:text-white">{{ totalSum.toLocaleString() }}</span>
+                <span class="text-2xl font-black tracking-tight leading-none text-[#18181B] dark:text-white transition-all duration-200">{{ totalSum.toLocaleString() }}</span>
                 <span class="text-[10px] font-bold text-gray-400 dark:text-gray-300">₽</span>
             </div>
         </div>
@@ -75,13 +83,17 @@ const totalSum = computed(() => {
             </div>
         </Transition>
 
-        <div class="flex h-4 w-full rounded-lg bg-gray-100 dark:bg-white/10 p-[2px] gap-[3px] shadow-inner relative isolate cursor-default">
+        <div
+            class="flex h-4 w-full rounded-lg bg-gray-100 dark:bg-white/10 p-[2px] gap-[3px] shadow-inner relative isolate transition-all duration-200"
+            :class="costRevealed ? 'cursor-default' : 'cost-spoiler cost-spoiler--block cursor-pointer'"
+            @click="emit('toggle-cost-visibility')"
+        >
             <div 
                 v-for="(segment, index) in chartData" 
                 :key="segment.key"
                 :class="[segment.bg, 'h-full rounded-md transition-all duration-300 ease-out relative hover:brightness-110']"
                 :style="{ width: `${segment.percent}%`, zIndex: 10 - index }"
-                @mouseenter="hoveredSegment = segment"
+                @mouseenter="costRevealed && (hoveredSegment = segment)"
             ></div>
         </div>
         
@@ -101,5 +113,17 @@ const totalSum = computed(() => {
 .tooltip-pop-leave-to {
     opacity: 0;
     transform: translate(-50%, 5px);
+}
+
+.cost-spoiler {
+    border-radius: 10px;
+    user-select: none;
+    filter: blur(8px);
+    -webkit-filter: blur(8px);
+    opacity: 0.92;
+}
+
+.cost-spoiler--block {
+    border-radius: 8px;
 }
 </style>

@@ -6,8 +6,8 @@ import {
     defaultSettings, 
     DB_CACHE_KEY 
 } from '../data/defaults';
-import { db, auth } from '../services/firebase';
-import { historyDoc, trashDoc, historyCol, trashCol, globalConfigDoc, garbageSlotDoc } from '@/core/db/collections';
+import { db, auth } from '@/firebase';
+import { historyDoc, trashDoc, historyCol, trashCol, globalConfigDoc } from '@/core/db/collections';
 import { 
     doc, setDoc, getDoc, updateDoc, arrayUnion, arrayRemove, onSnapshot, serverTimestamp,
     collection, addDoc, query, orderBy, getDocs, deleteDoc,
@@ -16,73 +16,63 @@ import {
 import { onAuthStateChanged } from 'firebase/auth';
 
 import { canUser } from '@/core/auth/access';
+import { COATING_PRICING_MODE_DTF_LINEAR, getCoatingPricePerCm2 } from '@/utils/coatingPricing';
+// ── единые модули корзины и ротации мусора ──
+import { moveToTrash as _moveToTrash, addToTrash as _addToTrash, restoreFromTrash as _restoreFromTrash, deleteForever as _deleteForever, listTrashItems as _listTrashItems, TRASH_TTL_DAYS } from '@/composables/useTrash';
+import { ensureDailyGarbageSlot as _ensureGarbage, writeGarbageEvent as _writeGarbage } from '@/composables/useGarbage';
 
+const isDtfLinearCoating = (item) => item?.pricingModel === COATING_PRICING_MODE_DTF_LINEAR;
 
-// =========================================================
-// ⚠️ НЕ УДАЛЯТЬ
-// GARBAGE (application-level rolling retention, ~30 days)
-// Принцип:
-// - 30 слотов (0..29), по одному на день
-// - Каждый день слот ОБЯЗАН обновляться:
-//   либо данными, либо пустой меткой
-// - Старые данные плавно вытесняются перезаписью
-// - Без TTL / Billing / background jobs
-// =========================================================
-const GARBAGE_SLOTS = 30;
-const DAY_MS = 24 * 60 * 60 * 1000;
-
-const garbageSlotRef = (uid, slot) => garbageSlotDoc(uid, slot);
-
-const todaySlot = () =>
-    Math.floor(Date.now() / DAY_MS) % GARBAGE_SLOTS;
-
-const isSameDay = (a, b) => {
-    try {
-        const da = new Date(a);
-        const dbb = new Date(b);
-        return da.toDateString() === dbb.toDateString();
-    } catch (e) { return false; }
+const createProcessingItemFromDtfCoating = (coating) => {
+    const markupPercent = Math.max(0, Number(coating?.markupPercent) || 0);
+    const rawPricePerCm2 = Math.max(0, Number(getCoatingPricePerCm2(coating, { includeMarkup: false })) || 0);
+    return {
+        id: `processing_dtf_${coating?.id || Date.now()}`,
+        name: coating?.name || 'DTF печать',
+        type: 'area_cm2',
+        price: rawPricePerCm2,
+        value: null,
+        qty: 1,
+        active: coating?.inStock !== false && coating?.active !== false,
+        markupPercent,
+        isDtfPrint: true,
+        migratedFromCoatingId: coating?.id || null,
+    };
 };
 
-// ⚠️ НЕ УДАЛЯТЬ
-// Гарантирует, что слот текущего дня обновлён.
-// Если сегодня не было событий — перезаписываем пустой меткой.
-const ensureDailyGarbageSlot = async (uid) => {
-    const slot = todaySlot();
-    const ref = garbageSlotRef(uid, slot);
-    const snap = await getDoc(ref);
+const normalizeGlobalData = (data) => {
+    if (!data || typeof data !== 'object') return data;
 
-    if (!snap.exists()) {
-        await setDoc(ref, {
-            type: 'empty',
-            writtenAt: serverTimestamp(),
-            slot
+    const nextData = { ...data };
+    const rawCoatings = Array.isArray(data.coatings) ? data.coatings : [];
+    const rawProcessing = Array.isArray(data.processing) ? [...data.processing] : [];
+    const dtfCoatings = rawCoatings.filter(isDtfLinearCoating);
+
+    if (!dtfCoatings.length) return nextData;
+
+    dtfCoatings.forEach((coating) => {
+        const alreadyExists = rawProcessing.some((item) => {
+            if (!item) return false;
+            if (item?.migratedFromCoatingId && coating?.id) return item.migratedFromCoatingId === coating.id;
+            return item?.isDtfPrint === true && String(item?.name || '').trim() === String(coating?.name || '').trim();
         });
-        return;
-    }
 
-    const data = snap.data();
-    // Если слот был записан НЕ сегодня — перезаписываем пустотой
-    if (!data?.writtenAt || !isSameDay(data.writtenAt?.toDate?.() ?? data.writtenAt, new Date())) {
-        await setDoc(ref, {
-            type: 'empty',
-            writtenAt: serverTimestamp(),
-            slot
-        });
-    }
-};
-
-// ⚠️ НЕ УДАЛЯТЬ
-// Запись события мусора в слот текущего дня (перезапись)
-const writeGarbage = async (uid, payload) => {
-    const slot = todaySlot();
-    await setDoc(garbageSlotRef(uid, slot), {
-        type: 'event',
-        payload,
-        writtenAt: serverTimestamp(),
-        slot
+        if (!alreadyExists) {
+            rawProcessing.unshift(createProcessingItemFromDtfCoating(coating));
+        }
     });
+
+    nextData.coatings = rawCoatings.filter((item) => !isDtfLinearCoating(item));
+    nextData.processing = rawProcessing;
+    return nextData;
 };
+
+
+// =========================================================
+// GARBAGE — ротация слотов делегирована в useGarbage.ts
+// =========================================================
+const ensureDailyGarbageSlot = (uid) => _ensureGarbage(uid);
+const writeGarbage = (uid, payload) => _writeGarbage(uid, payload);
 
 // --- ГЛОБАЛЬНОЕ СОСТОЯНИЕ (Singleton) ---
 const materials = ref([...emptyMaterials]);
@@ -91,6 +81,7 @@ const processingDB = ref([...emptyProcessingDB]);
 const accessoriesDB = ref([...emptyAccessoriesDB]);
 const packagingDB = ref([...emptyPackagingDB]);
 const designDB = ref([...emptyDesignDB]);
+const masterPriceCatalog = ref([]);
 const settings = ref({ ...defaultSettings });
 
 // Состояние пользователя
@@ -104,6 +95,54 @@ const isLoaded = ref(false);
 const isRemoteUpdate = ref(false);
 const userHistory = ref([]); 
 const allUsers = ref([]); 
+const isOfflineMode = ref(typeof navigator !== 'undefined' ? !navigator.onLine : false);
+
+const OFFLINE_HISTORY_QUEUE_KEY = 'monocalc_offline_history_queue_v1';
+const AUTH_SESSION_CACHE_KEY = 'monocalc_auth_session_v1';
+
+const readCachedAuthSession = () => {
+    try {
+        const raw = localStorage.getItem(AUTH_SESSION_CACHE_KEY);
+        const parsed = raw ? JSON.parse(raw) : null;
+        if (!parsed || typeof parsed !== 'object') return null;
+        if (!parsed?.uid) return null;
+        return parsed;
+    } catch {
+        return null;
+    }
+};
+
+const writeCachedAuthSession = (session) => {
+    try {
+        if (!session || !session?.uid) return;
+        localStorage.setItem(AUTH_SESSION_CACHE_KEY, JSON.stringify(session));
+    } catch {}
+};
+
+const clearCachedAuthSession = () => {
+    try { localStorage.removeItem(AUTH_SESSION_CACHE_KEY); } catch {}
+};
+
+const readOfflineQueue = () => {
+    try {
+        const raw = localStorage.getItem(OFFLINE_HISTORY_QUEUE_KEY);
+        const parsed = raw ? JSON.parse(raw) : [];
+        return Array.isArray(parsed) ? parsed : [];
+    } catch {
+        return [];
+    }
+};
+const writeOfflineQueue = (queue) => {
+    const normalized = Array.isArray(queue) ? queue : [];
+    try {
+        localStorage.setItem(OFFLINE_HISTORY_QUEUE_KEY, JSON.stringify(normalized));
+    } catch {}
+};
+const pendingProjectQueue = ref(readOfflineQueue());
+const pendingProjectSyncCount = computed(() => pendingProjectQueue.value.length);
+let networkListenersBound = false;
+let networkProbeIntervalId = null;
+let networkProbeInFlight = false;
 
 // Legacy flags mapping (compat): existing UI still asks for old keys.
 const LEGACY_PERMISSION_MAP = {
@@ -123,6 +162,155 @@ const DEFAULT_SUPERADMIN_UID = 'sGGQraRarlZAtRJKgMA26TB75MN2';
 const DEFAULT_SUPERADMIN_EMAIL = 'viktor19971997@gmail.com';
 
 export function useDatabase() {
+    const hasHistoryWriteAccess = () => hasPermission('canSaveHistory') || hasPermission('history.write');
+
+    const setOfflineState = () => {
+        isOfflineMode.value = true;
+        syncStatus.value = 'offline';
+    };
+
+    const setOnlineState = () => {
+        isOfflineMode.value = false;
+        if (syncStatus.value === 'offline') syncStatus.value = 'idle';
+    };
+
+    const probeNetworkReachability = async () => {
+        if (typeof window === 'undefined') return !isOfflineMode.value;
+
+        if (!navigator.onLine) {
+            setOfflineState();
+            return false;
+        }
+
+        if (networkProbeInFlight) return !isOfflineMode.value;
+        networkProbeInFlight = true;
+
+        try {
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 2500);
+            const baseUrl = import.meta.env.BASE_URL || '/';
+            const probeUrl = `${baseUrl}favicon.svg?network_probe=${Date.now()}`;
+
+            const response = await fetch(probeUrl, {
+                method: 'GET',
+                cache: 'no-store',
+                signal: controller.signal,
+            });
+
+            clearTimeout(timeoutId);
+
+            if (response.ok) {
+                setOnlineState();
+                return true;
+            }
+
+            setOfflineState();
+            return false;
+        } catch {
+            setOfflineState();
+            return false;
+        } finally {
+            networkProbeInFlight = false;
+        }
+    };
+
+    const restoreCachedAuthState = () => {
+        const cached = readCachedAuthSession();
+        if (!cached?.uid) return false;
+
+        user.value = {
+            uid: cached.uid,
+            email: cached.email || '',
+            displayName: cached.displayName || '',
+            photoURL: cached.photoURL || '',
+        };
+        userRole.value = cached.role || 'guest';
+        userPermissions.value = cached.permissions || {};
+        return true;
+    };
+
+    const upsertOfflineProject = ({ uid, id, payload }) => {
+        if (!uid || !id || !payload) return;
+        const queue = Array.isArray(pendingProjectQueue.value) ? [...pendingProjectQueue.value] : [];
+        const next = {
+            uid,
+            id,
+            payload,
+            queuedAt: new Date().toISOString()
+        };
+        const idx = queue.findIndex((item) => item?.uid === uid && item?.id === id);
+        if (idx >= 0) queue[idx] = next;
+        else queue.push(next);
+        pendingProjectQueue.value = queue;
+        writeOfflineQueue(queue);
+    };
+
+    const flushPendingProjectQueue = async () => {
+        if (isOfflineMode.value) return 0;
+        const queue = Array.isArray(pendingProjectQueue.value) ? [...pendingProjectQueue.value] : [];
+        if (!queue.length) return 0;
+
+        const u = await requireUserAsync(4000);
+        if (!u?.uid) return 0;
+        if (!hasHistoryWriteAccess()) return 0;
+
+        const remaining = [];
+        let synced = 0;
+
+        for (const item of queue) {
+            if (!item?.uid || !item?.id || !item?.payload) continue;
+            if (item.uid !== u.uid) {
+                remaining.push(item);
+                continue;
+            }
+
+            try {
+                await setDoc(historyDocRef(u.uid, item.id), item.payload, { merge: true });
+                synced++;
+            } catch (e) {
+                const code = String(e?.code || '');
+                if (code === 'permission-denied') {
+                    remaining.push(item);
+                    continue;
+                }
+                remaining.push(item);
+            }
+        }
+
+        pendingProjectQueue.value = remaining;
+        writeOfflineQueue(remaining);
+        return synced;
+    };
+
+    const bindNetworkListeners = () => {
+        if (networkListenersBound || typeof window === 'undefined') return;
+
+        const onOffline = () => {
+            setOfflineState();
+        };
+        const onOnline = async () => {
+            const reachable = await probeNetworkReachability();
+            if (reachable) await flushPendingProjectQueue();
+        };
+        const onVisibilityChange = async () => {
+            if (document.visibilityState === 'visible') {
+                const reachable = await probeNetworkReachability();
+                if (reachable) await flushPendingProjectQueue();
+            }
+        };
+
+        window.addEventListener('offline', onOffline);
+        window.addEventListener('online', onOnline);
+        document.addEventListener('visibilitychange', onVisibilityChange);
+
+        if (!networkProbeIntervalId) {
+            networkProbeIntervalId = setInterval(() => {
+                probeNetworkReachability();
+            }, 15000);
+        }
+
+        networkListenersBound = true;
+    };
     
     // --- 1. ИНИЦИАЛИЗАЦИЯ ---
     const initDatabase = async () => {
@@ -136,6 +324,14 @@ export function useDatabase() {
 
         if (isLoaded.value) return; 
 
+        bindNetworkListeners();
+        await probeNetworkReachability();
+        pendingProjectQueue.value = readOfflineQueue();
+
+        if (isOfflineMode.value && !auth.currentUser) {
+            restoreCachedAuthState();
+        }
+
         // Загрузка из кэша для скорости
         const cachedDB = localStorage.getItem(DB_CACHE_KEY);
         if (cachedDB) { 
@@ -145,15 +341,25 @@ export function useDatabase() {
 
         // Слушаем авторизацию
         onAuthStateChanged(auth, async (currentUser) => {
-            user.value = currentUser;
-            
             if (currentUser) {
+                user.value = currentUser;
                 // ⚠️ НЕ УДАЛЯТЬ: гарантируем ежедневное обслуживание мусорного слота
                 // уже после появления auth uid.
                 try { await ensureDailyGarbageSlot(currentUser.uid); } catch (e) {}
 
                 // 1. Регистрируем/Загружаем профиль
-                await checkAndRegisterUser(currentUser);
+                try {
+                    await checkAndRegisterUser(currentUser);
+                } catch (e) {
+                    const code = String(e?.code || '');
+                    if (isOfflineMode.value || code === 'unavailable' || code === 'deadline-exceeded') {
+                        restoreCachedAuthState();
+                    } else {
+                        console.error('[DB] auth profile load failed:', e);
+                        setGuestState();
+                        return;
+                    }
+                }
                 
                 // 2. Если есть право управлять командой — грузим список всех юзеров
                 if (userRole.value === 'superadmin' || hasPermission('users.list.view') || hasPermission('canManageTeam')) {
@@ -164,7 +370,12 @@ export function useDatabase() {
                 if (hasPermission('canSaveHistory')) {
                     subscribeToHistory();
                 }
+
+                if (!isOfflineMode.value && hasHistoryWriteAccess()) {
+                    await flushPendingProjectQueue();
+                }
             } else {
+                if (isOfflineMode.value && restoreCachedAuthState()) return;
                 setGuestState();
             }
         });
@@ -174,11 +385,13 @@ export function useDatabase() {
         isLoaded.value = true;
     };
 
-    const setGuestState = () => {
+    const setGuestState = ({ clearSessionCache = true } = {}) => {
         userRole.value = 'guest';
         userPermissions.value = {};
+        user.value = null;
         userHistory.value = [];
         allUsers.value = [];
+        if (clearSessionCache) clearCachedAuthSession();
     };
 
     // --- ПРОВЕРКА ПРАВ (ГЛАВНАЯ ФУНКЦИЯ) ---
@@ -274,6 +487,16 @@ export function useDatabase() {
         if (!userSnap.exists()) {
             userPermissions.value = {};
         }
+
+        writeCachedAuthSession({
+            uid: currentUser.uid,
+            email: currentUser.email || '',
+            displayName: currentUser.displayName || '',
+            photoURL: currentUser.photoURL || '',
+            role: userRole.value,
+            permissions: userPermissions.value || {},
+            savedAt: new Date().toISOString(),
+        });
     };
 
     const subscribeToAllUsers = () => {
@@ -320,22 +543,37 @@ export function useDatabase() {
         const docRef = doc(db, "settings", "global_config");
 
         onSnapshot(docRef, async (docSnap) => {
+            const browserOnline = typeof navigator !== 'undefined' ? navigator.onLine : true;
+            if (!browserOnline) {
+                isOfflineMode.value = true;
+                syncStatus.value = 'offline';
+            }
+
             if (docSnap.exists()) {
                 isRemoteUpdate.value = true; 
-                const data = docSnap.data();
+                const data = normalizeGlobalData(docSnap.data());
                 applyData(data);
                 localStorage.setItem(DB_CACHE_KEY, JSON.stringify(data));
-                syncStatus.value = 'success';
+                syncStatus.value = isOfflineMode.value ? 'offline' : 'success';
                 await nextTick();
                 isRemoteUpdate.value = false;
             } else {
-                syncStatus.value = 'idle';
+                syncStatus.value = isOfflineMode.value ? 'offline' : 'idle';
             }
-            setTimeout(() => { if(syncStatus.value === 'success') syncStatus.value = 'idle'; }, 2000);
+            setTimeout(() => {
+                if (syncStatus.value === 'success') syncStatus.value = 'idle';
+                if (isOfflineMode.value) syncStatus.value = 'offline';
+            }, 2000);
         }, (err) => {
             if (err?.code === 'permission-denied') {
                 console.warn('[DB] settings listen denied (expected for limited roles)');
                 syncStatus.value = 'idle';
+                return;
+            }
+            const code = String(err?.code || '');
+            if (code === 'unavailable' || code === 'deadline-exceeded' || code === 'network-request-failed') {
+                isOfflineMode.value = true;
+                syncStatus.value = 'offline';
                 return;
             }
             console.error('Ошибка настроек:', err);
@@ -344,14 +582,16 @@ export function useDatabase() {
     };
 
     const applyData = (data) => {
-        if (!data) return;
-        if (data.materials) materials.value = data.materials;
-        if (data.coatings) coatings.value = data.coatings;
-        if (data.processing) processingDB.value = data.processing;
-        if (data.accessories) accessoriesDB.value = data.accessories;
-        if (data.packaging) packagingDB.value = data.packaging;
-        if (data.design) designDB.value = data.design;
-        if (data.settings) settings.value = { ...settings.value, ...data.settings };
+        const normalized = normalizeGlobalData(data);
+        if (!normalized) return;
+        if (normalized.materials) materials.value = normalized.materials;
+        if (normalized.coatings) coatings.value = normalized.coatings;
+        if (normalized.processing) processingDB.value = normalized.processing;
+        if (normalized.accessories) accessoriesDB.value = normalized.accessories;
+        if (normalized.packaging) packagingDB.value = normalized.packaging;
+        if (normalized.design) designDB.value = normalized.design;
+        if (Array.isArray(normalized.masterPriceCatalog)) masterPriceCatalog.value = normalized.masterPriceCatalog;
+        if (normalized.settings) settings.value = { ...settings.value, ...normalized.settings };
     };
 
     // --- 3. СОХРАНЕНИЕ НАСТРОЕК ---
@@ -370,16 +610,9 @@ export function useDatabase() {
         return before.filter((x) => !afterKeys.has(makeKey(x)));
     };
 
+    // Записываем в корзину через единый модуль useTrash
     const archiveToUserTrash = async (uid, entry) => {
-        const deletedAtISO = new Date().toISOString();
-        const expiresAtISO = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString();
-
-        await addDoc(trashCollectionRef(uid), {
-            ...entry,
-            deletedAt: serverTimestamp(),
-            deletedAtISO,
-            expiresAtISO,
-        });
+        await _addToTrash(uid, entry);
     };
 
 const saveFullDatabase = async () => {
@@ -388,6 +621,7 @@ const saveFullDatabase = async () => {
         const canWriteGlobal = hasPermission('settings.global.write') || hasPermission('canEditGlobalSettings');
         const canWriteMaterials = hasPermission('settings.materials.write') || hasPermission('canEditMaterials');
         const canWritePrices = hasPermission('settings.prices.write') || hasPermission('canEditPrices');
+        const canWriteMasterPrices = canWritePrices || canWriteGlobal;
 
         const canEditAny = canWriteGlobal || canWriteMaterials || canWritePrices;
         if (!canEditAny) {
@@ -434,6 +668,10 @@ const saveFullDatabase = async () => {
             payload.settings = settings.value;
         }
 
+        if (canWriteMasterPrices) {
+            payload.masterPriceCatalog = masterPriceCatalog.value;
+        }
+
         try {
             // updateDoc падает, если документа ещё нет — тогда создаём его (merge) без риска затереть поля.
             await updateDoc(docRef, payload);
@@ -473,6 +711,17 @@ const saveFullDatabase = async () => {
                             payload: x
                         })));
                     });
+                }
+
+                if (canWriteMasterPrices && payload.masterPriceCatalog) {
+                    const removed = diffRemoved(beforeData.masterPriceCatalog, payload.masterPriceCatalog);
+                    removed.forEach((x) => writes.push(archiveToUserTrash(uid, {
+                        itemType: 'settings',
+                        dataType: 'masterPriceCatalog',
+                        sourcePath: 'settings/global_config',
+                        name: x?.name || x?.title || '',
+                        payload: x
+                    })));
                 }
 
                 if (writes.length) await Promise.allSettled(writes);
@@ -527,6 +776,17 @@ const saveFullDatabase = async () => {
                     });
                 }
 
+                if (canWriteMasterPrices && payload.masterPriceCatalog) {
+                    const removed = diffRemoved(beforeData.masterPriceCatalog, payload.masterPriceCatalog);
+                    removed.forEach((x) => writes.push(archiveToUserTrash(uid, {
+                        itemType: 'settings',
+                        dataType: 'masterPriceCatalog',
+                        sourcePath: 'settings/global_config',
+                        name: x?.name || x?.title || '',
+                        payload: x
+                    })));
+                }
+
                 if (writes.length) await Promise.allSettled(writes);
             } catch (trashErr) {
                 console.warn('[TRASH] archive settings removals failed:', trashErr);
@@ -569,11 +829,9 @@ const saveFullDatabase = async () => {
                     unsub();
                     resolve(u);
                 } else {
-                    // если вышел/не вошёл — не падаем сразу, ждём таймаут
-                    if (Date.now() - start >= timeoutMs) {
-                        unsub();
-                        resolve(null);
-                    }
+                    // Разрешаем null сразу, если пользователь реально не вошёл (не ждём таймаут зря)
+                    unsub();
+                    resolve(null);
                 }
             });
             setTimeout(() => {
@@ -649,8 +907,11 @@ const saveFullDatabase = async () => {
      * @returns {{result: any[], cursor: any, hasMore: boolean} | {status:'error', message:string}}
      */
     const getCloudHistory = async (opts = {}) => {
-        try {
-            const { uid } = requireUser();
+        // Wrap core logic in a promise so we can race it with a timeout to avoid hanging UI
+        const core = async () => {
+            const u = await requireUserAsync();
+            if (!u?.uid) throw new Error('Необходимо войти в аккаунт');
+            const uid = u.uid;
             const pageSize = Number.isFinite(Number(opts.pageSize)) ? Number(opts.pageSize) : 50;
             const cursor = opts.cursor || null;
 
@@ -670,6 +931,19 @@ const saveFullDatabase = async () => {
                 const name = (raw.name || stateProject.name || '').toString().trim();
                 const client = (raw.client || stateProject.client || '').toString().trim();
                 const date = raw.date || raw.savedAt || null;
+                const qty = Number(raw?.qty || stateProject?.qty || 1);
+                const normalizedQty = Number.isFinite(qty) && qty > 0 ? Math.floor(qty) : 1;
+                const rawTotal = Number(raw?.total || 0);
+                const rawTotalPerUnit = Number(raw?.totalPerUnit || 0);
+                const rawTotalOrder = Number(raw?.totalOrder || 0);
+
+                const totalPerUnit = rawTotalPerUnit > 0
+                    ? rawTotalPerUnit
+                    : (rawTotalOrder > 0 ? rawTotalOrder / normalizedQty : rawTotal);
+
+                const totalOrder = rawTotalOrder > 0
+                    ? rawTotalOrder
+                    : (rawTotalPerUnit > 0 ? (rawTotalPerUnit * normalizedQty) : (rawTotal * normalizedQty));
 
                 return {
                     ...raw,
@@ -677,16 +951,25 @@ const saveFullDatabase = async () => {
                     projectId: raw?.id || d.id,
                     name: name || 'Без названия',
                     client,
-                    date
+                    date,
+                    qty: normalizedQty,
+                    total: Math.round(totalOrder),
+                    totalPerUnit: Math.round(totalPerUnit),
+                    totalOrder: Math.round(totalOrder)
                 };
             });
 
             const last = snap.docs.length ? snap.docs[snap.docs.length - 1] : null;
-
-            // Если пришло меньше pageSize — подгружать нечего.
             const hasMore = snap.docs.length === pageSize;
-
             return { result: items, cursor: last, hasMore };
+        };
+
+        try {
+            const TIMEOUT_MS = 10000;
+            return await Promise.race([
+                core(),
+                new Promise((_, reject) => setTimeout(() => reject(new Error('История: таймаут запроса')), TIMEOUT_MS))
+            ]);
         } catch (e) {
             console.error('Get History Error:', e);
             return { status: 'error', message: e?.message || String(e) };
@@ -695,8 +978,12 @@ const saveFullDatabase = async () => {
 
     const saveCloudHistory = async (projectData) => {
         try {
-            const { uid } = requireUser();
+            const u = await requireUserAsync();
+            if (!u?.uid) throw new Error('Необходимо войти в аккаунт');
+            const uid = u.uid;
+            if (!hasHistoryWriteAccess()) throw new Error('Недостаточно прав для сохранения истории');
             if (!projectData?.id) throw new Error('Нет ID проекта');
+            const isNetworkOffline = isOfflineMode.value || (typeof navigator !== 'undefined' && !navigator.onLine);
 
             const stateProject = projectData?.state?.project || {};
             const normalizedName = (projectData.name || stateProject.name || '').toString().trim();
@@ -711,9 +998,62 @@ const saveFullDatabase = async () => {
                 savedAt: nowIso
             };
 
-            await setDoc(historyDocRef(uid, projectData.id), dataToSave, { merge: true });
+            if (isNetworkOffline) {
+                upsertOfflineProject({
+                    uid,
+                    id: projectData.id,
+                    payload: dataToSave
+                });
+                syncStatus.value = 'offline';
+                return { status: 'queued', message: 'Офлайн: проект сохранён в кэш и будет синхронизирован позже' };
+            }
+
+            // Wrapping setDoc in a race to prevent endless hanging when offline but not cleanly detected
+            const savePromise = setDoc(historyDocRef(uid, projectData.id), dataToSave, { merge: true });
+            
+            await Promise.race([
+                savePromise,
+                new Promise((_, reject) => setTimeout(() => reject(new Error('timeout_saving')), 5000))
+            ]);
+
             return { status: 'success', message: 'Проект сохранен' };
         } catch (e) {
+            const code = String(e?.code || '');
+            const msg = String(e?.message || '').toLowerCase();
+            const isNetworkIssue =
+                isOfflineMode.value ||
+                !navigator.onLine ||
+                code === 'unavailable' ||
+                code === 'deadline-exceeded' ||
+                msg.includes('offline') ||
+                msg.includes('network');
+
+            if (projectData?.id && isNetworkIssue) {
+                const u = auth.currentUser || user.value;
+                if (u?.uid && hasHistoryWriteAccess()) {
+                    const stateProject = projectData?.state?.project || {};
+                    const normalizedName = (projectData.name || stateProject.name || '').toString().trim();
+                    const normalizedClient = (projectData.client || stateProject.client || '').toString().trim();
+                    const nowIso = new Date().toISOString();
+
+                    upsertOfflineProject({
+                        uid: u.uid,
+                        id: projectData.id,
+                        payload: {
+                            ...projectData,
+                            name: normalizedName || 'Без названия',
+                            client: normalizedClient,
+                            date: projectData?.date || nowIso,
+                            savedAt: nowIso
+                        }
+                    });
+
+                    isOfflineMode.value = true;
+                    syncStatus.value = 'offline';
+                    return { status: 'queued', message: 'Офлайн: проект поставлен в очередь синхронизации' };
+                }
+            }
+
             console.error('Save History Error:', e);
             return { status: 'error', message: e?.message || String(e) };
         }
@@ -721,7 +1061,9 @@ const saveFullDatabase = async () => {
 
     const deleteCloudHistory = async (id) => {
         try {
-            const { uid } = requireUser();
+            const u = await requireUserAsync();
+            if (!u?.uid) throw new Error('Необходимо войти в аккаунт');
+            const uid = u.uid;
             if (!id) throw new Error('Нет ID проекта');
 
             let fromRef = historyDocRef(uid, id);
@@ -779,126 +1121,18 @@ const saveFullDatabase = async () => {
         try {
             const u = await requireUserAsync();
             if (!u?.uid) return [];
-            const uid = u.uid;
-
-            const snap = await getDocs(trashCollectionRef(uid));
-            const trash = [];
-            snap.forEach((d) => {
-                const raw = d.data() || {};
-                trash.push({ ...raw, id: d.id, trashId: raw?.id || d.id });
-            });
-
-            // фильтрация: последние ~31 день
-            const cutoff = Date.now() - 31 * 24 * 60 * 60 * 1000;
-            const parseMs = (iso) => {
-                if (!iso) return 0;
-                const t = new Date(iso).getTime();
-                return Number.isFinite(t) ? t : 0;
-            };
-
-            return trash
-                .filter((x) => {
-                    const ms = parseMs(x.expiresAtISO || x.deletedAtISO);
-                    return ms === 0 ? true : ms >= cutoff;
-                })
-                .sort((a, b) => parseMs(b.deletedAtISO) - parseMs(a.deletedAtISO));
+            return await _listTrashItems(u.uid);
         } catch (e) {
             console.error('Trash Error:', e);
             return [];
         }
     };
 
-    const restoreCloudHistoryFromTrash = async (id, opts = {}) => {
+    const restoreCloudHistoryFromTrash = async (id) => {
         try {
             const u = await requireUserAsync();
-            const uid = u?.uid;
-            if (!uid) throw new Error('Необходимо войти в аккаунт');
-            if (!id) throw new Error('Нет ID');
-
-            const fromRef = trashDocRef(uid, id);
-            const snap = await getDoc(fromRef);
-            if (!snap.exists()) return { status: 'error', message: 'Элемент не найден в архиве' };
-
-            const data = snap.data() || {};
-
-            // ===== STEP 6: срок хранения / запрет восстановления после purge =====
-            const nowMs = Date.now();
-            const expIso = data.expiresAtISO || data.purgeAtISO || null;
-            if (expIso) {
-                const expMs = new Date(expIso).getTime();
-                if (Number.isFinite(expMs) && expMs <= nowMs) {
-                    // Просрочено — удаляем запись из архива и запрещаем восстановление
-                    await deleteDoc(fromRef);
-                    return { status: 'error', message: 'Срок хранения истёк (30 дней). Запись удалена из архива.' };
-                }
-            }
-
-            // ===== STEP 6: права на восстановление =====
-            // settings restore требует прав на запись глобальных настроек
-            if (data.itemType === 'settings' && !hasPermission('canEditGlobalSettings') && !hasPermission('settings.global.write')) {
-                throw new Error('Недостаточно прав для восстановления настроек');
-            }
-            // projects/history restore требует права на запись истории
-            if (data.itemType !== 'settings' && !hasPermission('canSaveHistory') && !hasPermission('history.write')) {
-                throw new Error('Недостаточно прав для восстановления данных');
-            }
-
-            const destination = opts?.destination || null;
-
-            
-            const writeRestoreAudit = async (meta = {}) => {
-                try {
-                    // ⚠️ Пишем в /users/{uid}/history — других коллекций правилами не разрешено
-                    // Чтобы не ломать историю проектов, помечаем запись как audit.
-                    await addDoc(historyCollectionRef(uid), {
-                        audit: true,
-                        action: 'restore',
-                        source: 'trash',
-                        type: data.itemType || data.type || 'unknown',
-                        title: data?.title || data?.name || data?.data?.name || data?.data?.title || meta?.title || 'Восстановление',
-                        restoredAt: serverTimestamp(),
-                        savedAt: new Date().toISOString(),
-                        restoredBy: uid,
-                        destination: destination,
-                        trashId: id,
-                        meta: meta
-                    });
-                } catch (e) {
-                    // лог не должен блокировать восстановление
-                    console.warn('Restore audit log failed:', e?.message || e);
-                }
-            };
-// ===== Восстановление настроек (settings/global_config) =====
-            if (data.itemType === 'settings') {
-                const key = data.dataType;
-                if (!key) throw new Error('Не указан тип данных (dataType)');
-
-                const item = data.payload;
-                if (!item) throw new Error('Нет данных для восстановления');
-
-                await updateDoc(globalConfigDoc(), {
-                    [key]: arrayUnion(item)
-                });
-
-                await writeRestoreAudit({ module: 'settings', key });
-
-                await deleteDoc(fromRef);
-                return { status: 'success', message: 'Данные восстановлены' };
-            }
-
-            // ===== Восстановление проектов истории (по-умолчанию) =====
-            const { deletedAt, deletedAtISO, expiresAtISO, ...rest } = data;
-            const historyId = rest?.sourceHistoryId || rest?.id || id;
-            await setDoc(historyDocRef(uid, historyId), {
-                ...rest,
-                id: historyId,
-                savedAt: rest.savedAt || new Date().toISOString()
-            }, { merge: true });
-
-            await writeRestoreAudit({ module: 'history' });
-
-            await deleteDoc(fromRef);
-            return { status: 'success', message: 'Проект восстановлен' };
+            if (!u?.uid) throw new Error('Необходимо войти в аккаунт');
+            return await _restoreFromTrash(u.uid, id);
         } catch (e) {
             console.error('Restore Trash Error:', e);
             return { status: 'error', message: e?.message || String(e) };
@@ -908,11 +1142,8 @@ const saveFullDatabase = async () => {
     const deleteTrashForever = async (id) => {
         try {
             const u = await requireUserAsync();
-            const uid = u?.uid;
-            if (!uid) throw new Error('Необходимо войти в аккаунт');
-            if (!id) throw new Error('Нет ID');
-
-            await deleteDoc(trashDocRef(uid, id));
+            if (!u?.uid) throw new Error('Необходимо войти в аккаунт');
+            await _deleteForever(u.uid, id);
             return { status: 'success', message: 'Удалено навсегда' };
         } catch (e) {
             console.error('Delete Trash Forever Error:', e);
@@ -948,10 +1179,13 @@ const saveFullDatabase = async () => {
             return false;
         }
         try {
-            await addDoc(historyCol(user.value.uid), {
+            console.debug('[DB] saveProjectToHistory called', { uid: user.value?.uid, isOfflineMode: isOfflineMode?.value, projectData });
+            const dataToSave = {
                 ...projectData,
-                date: serverTimestamp()
-            });
+                date: projectData?.date || new Date().toISOString(),
+                savedAt: serverTimestamp()
+            };
+            await addDoc(historyCol(user.value.uid), dataToSave);
             return true;
         } catch (e) {
             console.error("Ошибка сохранения проекта:", e);
@@ -982,15 +1216,26 @@ const saveFullDatabase = async () => {
             ...searchIn(accessoriesDB.value, 'accessories', 'Аксессуар'),
             ...searchIn(packagingDB.value, 'packaging', 'Упаковка'),
             ...searchIn(designDB.value, 'design', 'Дизайн'),
+            ...searchIn(masterPriceCatalog.value, 'master-price', 'Мастер-прайс'),
         ];
     };
     
     const materialGroups = computed(() => {
         const groups = {};
-        materials.value.forEach(m => {
+        const formatThickness = (value) => {
+            const parsed = Number(value);
+            if (!Number.isFinite(parsed) || parsed <= 0) return '';
+            return Number.isInteger(parsed) ? String(parsed) : String(parsed).replace('.', ',');
+        };
+        [...(materials.value || [])].reverse().forEach(m => {
+            if (m?.inStock === false || m?.active === false) return;
             const type = m.type || 'Прочее';
             if (!groups[type]) groups[type] = [];
-            groups[type].push(m);
+            const thicknessLabel = formatThickness(m?.thickness);
+            groups[type].push({
+                ...m,
+                label: thicknessLabel ? `${m?.name || 'Без названия'} • ${thicknessLabel} мм` : (m?.name || 'Без названия')
+            });
         });
         return groups;
     });
@@ -1033,13 +1278,15 @@ const saveFullDatabase = async () => {
     };
 
     return {
-        materials, coatings, processingDB, accessoriesDB, packagingDB, designDB, settings,
+        materials, coatings, processingDB, accessoriesDB, packagingDB, designDB, masterPriceCatalog, settings,
         materialGroups, userHistory, allUsers,
         syncStatus, isLoaded, user, 
         isAdmin, // Legacy
         isSuperAdmin,
         userRole, 
         hasPermission, // <--- НОВАЯ ФУНКЦИЯ ПРАВ
+        isOfflineMode,
+        pendingProjectSyncCount,
         isRemoteUpdate,
         initDatabase, saveFullDatabase, saveProjectToHistory, updateUserRole, searchGlobal,
         // Legacy API compatibility (ex-services/api.js)

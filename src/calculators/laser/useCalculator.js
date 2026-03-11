@@ -3,6 +3,7 @@ import { useDatabase } from '@/composables/useDatabase';
 import { USER_DATA_KEY } from '@/data/defaults';
 import { sanitizeText } from '@/utils/sanitize';
 import { isCoatingAllowedForMaterial } from '@/utils/coatingCompatibility';
+import { COATING_PRICING_MODE_DTF_LINEAR, getCoatingPricePerCm2 } from '@/utils/coatingPricing';
 
 // --- FIX 3.4 (Zombie tabs): изоляция автосохранения между вкладками ---
 // По умолчанию localStorage общий для всех вкладок, из-за чего два открытых калькулятора
@@ -59,6 +60,20 @@ const qtySafe = (q) => {
     const n = toNum(q, 1);
     return Number.isFinite(n) && n > 0 ? n : 1;
 };
+const hasNumericInput = (value) => {
+    if (value === '' || value === null || value === undefined) return false;
+    return Number.isFinite(toNum(value, NaN));
+};
+const usesValueField = (type) => type === 'fixed' || type === 'percent';
+const normalizeSides = (value) => {
+    const parsed = Math.round(toNum(value, 1));
+    return parsed >= 2 ? 2 : 1;
+};
+const applyMarkup = (value, markupPercent) => {
+    const amount = toNum(value, 0);
+    const pct = Math.max(0, toNum(markupPercent, 0));
+    return amount * (1 + pct / 100);
+};
 
 // ВАЖНО: состояние должно быть *инстансным*, а не модульным.
 // Это позволяет подключать много калькуляторов (или несколько инстансов одного)
@@ -78,6 +93,7 @@ function createState() {
 
 export function useLaserCalculator() {
     const { project, layers, processing, accessories, packaging, design, currentProjectId, autoSaveCounter } = createState();
+    let skipNextAutoSaveAfterReset = false;
 
     const tabId = getTabId();
     const storage = getPreferredStorage();
@@ -104,6 +120,53 @@ watch(project, () => {
         restoreCloudHistoryFromTrash,
         deleteTrashForever
     } = useDatabase();
+
+    const getFirstAvailableDbItem = (dbListRef) => {
+        const list = Array.isArray(dbListRef?.value) ? dbListRef.value : [];
+        return list.find((entry) => entry?.active !== false && entry?.inStock !== false) || list[0] || null;
+    };
+
+    const applyDbDefaultsToItem = (item, dbItem, { forceNumbers = false } = {}) => {
+        if (!item || !dbItem) return item;
+
+        const markup = Math.max(0, toNum(dbItem?.markupPercent, 0));
+        const nextType = dbItem?.type || item?.type || 'fixed';
+        const typeChanged = item.type && item.type !== nextType;
+        const shouldUseValue = usesValueField(nextType);
+        const defaultValue = nextType === 'percent'
+            ? applyMarkup(dbItem?.price ?? dbItem?.value ?? 0, markup)
+            : applyMarkup(dbItem?.value ?? dbItem?.price ?? 0, markup);
+        const defaultPrice = applyMarkup(dbItem?.price ?? dbItem?.value ?? 0, markup);
+        const defaultRollWidth = toNum(dbItem?.rollWidthMm ?? dbItem?.rollWidth, 0);
+
+        item.dbId = dbItem?.id ?? item.dbId;
+        item.name = dbItem?.name ?? item.name;
+        item.type = nextType;
+
+        if (shouldUseValue && (forceNumbers || typeChanged || !hasNumericInput(item.value))) {
+            item.value = defaultValue;
+        }
+        else if (!shouldUseValue && (forceNumbers || typeChanged)) {
+            item.value = null;
+        }
+
+        if (!shouldUseValue && (forceNumbers || typeChanged || !hasNumericInput(item.price))) {
+            item.price = defaultPrice;
+        }
+        else if (shouldUseValue && (forceNumbers || typeChanged)) {
+            item.price = null;
+        }
+
+        if (defaultRollWidth > 0 && (forceNumbers || !hasNumericInput(item.rollWidthMm))) {
+            item.rollWidthMm = defaultRollWidth;
+        }
+
+        if (!hasNumericInput(item.qty)) {
+            item.qty = 1;
+        }
+
+        return item;
+    };
     
     // --- ФУНКЦИИ ДОБАВЛЕНИЯ ---
     const addLayer = () => {
@@ -120,24 +183,26 @@ watch(project, () => {
         });
     };
     
-    const addItem = (listRef, defaultType = 'fixed') => { 
-        listRef.value.unshift({ 
+    const addItem = (listRef, defaultType = 'fixed', dbListRef = null, fallbackName = '', seedFromDb = true) => {
+        const item = {
             id: Date.now() + Math.random(), 
-            dbId: '', name: '', type: defaultType, value: null, price: null, qty: 1 
-        }); 
+            dbId: '', name: fallbackName, type: defaultType, value: null, price: null, qty: 1 
+        };
+        if (seedFromDb) {
+            const defaultDbItem = getFirstAvailableDbItem(dbListRef);
+            if (defaultDbItem) applyDbDefaultsToItem(item, defaultDbItem, { forceNumbers: true });
+        }
+        listRef.value.unshift(item);
+        return item;
     };
 
     const addProcessing = () => { 
-        processing.value.unshift({ 
-            id: Date.now() + Math.random(), 
-            name: `Услуга ${processing.value.length + 1}`, 
-            dbId: '', type: 'fixed', value: null, price: null, qty: 1 
-        }); 
+        return addItem(processing, 'fixed', processingDB, `Услуга ${processing.value.length + 1}`, false);
     };
     
-    const addAccessory = () => addItem(accessories, 'pieces');
-    const addPackaging = () => addItem(packaging, 'pieces');
-    const addDesign = () => addItem(design, 'fixed');
+    const addAccessory = () => addItem(accessories, 'pieces', accessoriesDB, `Аксессуар ${accessories.value.length + 1}`, false);
+    const addPackaging = () => addItem(packaging, 'pieces', packagingDB, `Упаковка ${packaging.value.length + 1}`, false);
+    const addDesign = () => addItem(design, 'fixed', designDB, `Дизайн ${design.value.length + 1}`, false);
 
     // --- ФУНКЦИИ УДАЛЕНИЯ ---
     const removeLayer = (id) => layers.value = layers.value.filter(x => x.id !== id);
@@ -169,6 +234,7 @@ watch(project, () => {
         packaging.value = []; addPackaging();
         design.value = []; addDesign();
         project.value = { name: '', client: '', discount: 0, markup: 0 };
+        skipNextAutoSaveAfterReset = true;
     };
 
     const loadUserProject = () => {
@@ -196,6 +262,19 @@ watch(project, () => {
         }
     };
 
+    const syncListWithDb = (listRef, dbListRef) => {
+        const list = listRef?.value;
+        const dbList = dbListRef?.value;
+        if (!Array.isArray(list) || !Array.isArray(dbList) || !dbList.length) return;
+
+        list.forEach((item) => {
+            if (!item?.dbId) return;
+            const dbItem = dbList.find((entry) => entry?.id === item.dbId);
+            if (!dbItem) return;
+            applyDbDefaultsToItem(item, dbItem);
+        });
+    };
+
     // --- АВТОСОХРАНЕНИЕ ---
     let saveTimeout = null;
     watch([layers, processing, accessories, packaging, design, project, currentProjectId], () => {
@@ -215,22 +294,49 @@ watch(project, () => {
         }, 1000);
     }, { deep: true });
 
+    watch([processingDB, accessoriesDB, packagingDB, designDB], () => {
+        syncListWithDb(processing, processingDB);
+        syncListWithDb(accessories, accessoriesDB);
+        syncListWithDb(packaging, packagingDB);
+        syncListWithDb(design, designDB);
+    }, { deep: true, immediate: true });
+
     // --- ИСТОРИЯ И ОБЛАКО (С УМНЫМ ФИЛЬТРОМ) ---
     
     // 1. Парсер даты (понимает и ISO, и Русский формат)
-    const parseProjectDate = (dateStr) => {
-        if (!dateStr) return new Date(0);
-        if (dateStr.includes('T')) return new Date(dateStr); // ISO формат
-        
+    const parseProjectDate = (input) => {
+        if (!input) return new Date(0);
+
+        // If it's already a Date
+        if (input instanceof Date) return input;
+
+        // Firestore Timestamp has toDate()
         try {
-            // Формат: 25.05.2025, 14:30
-            const [dPart, tPart] = dateStr.split(', ');
-            const [d, m, y] = dPart.split('.');
-            // Месяцы в JS начинаются с 0, поэтому формат YYYY-MM-DD корректен для конструктора
-            return new Date(`${y}-${m}-${d}T${tPart || '00:00'}:00`);
-        } catch (e) {
-            return new Date(0);
+            if (typeof input === 'object' && typeof input.toDate === 'function') {
+                return input.toDate();
+            }
+        } catch (e) {}
+
+        // If it's a number (ms since epoch)
+        if (typeof input === 'number') return new Date(input);
+
+        // If it's a string - try ISO first, then dd.mm.yyyy
+        if (typeof input === 'string') {
+            const s = input.trim();
+            if (s.includes('T')) return new Date(s);
+            try {
+                const [dPart, tPart] = s.split(', ');
+                const [d, m, y] = (dPart || '').split('.');
+                if (d && m && y) {
+                    return new Date(`${y}-${m}-${d}T${tPart || '00:00'}:00`);
+                }
+            } catch (e) {}
+            // Fallback to Date constructor
+            const maybe = new Date(s);
+            if (!isNaN(maybe.getTime())) return maybe;
         }
+
+        return new Date(0);
     };
 
     // 2. Функция фильтрации (Оставляет только свежее 30 дней)
@@ -247,14 +353,14 @@ watch(project, () => {
         });
     };
 
-    const getFullState = () => ({
+    const getFullState = () => JSON.parse(JSON.stringify({
         layers: layers.value,
         processing: processing.value,
         accessories: accessories.value,
         packaging: packaging.value,
         design: design.value,
         project: project.value
-    });
+    }));
 
     const loadState = (data, id) => {
         if (!data) return;
@@ -293,25 +399,32 @@ watch(project, () => {
         }
     };
 
-    const saveToHistory = async (nameOverride) => {
+    const saveToHistory = async (nameOverride, opts = {}) => {
         if (!hasPermission('canSaveHistory')) throw new Error('Недостаточно прав для сохранения истории');
+        const forceNew = !!opts?.forceNew;
         const finalNameRaw = nameOverride || project.value.name;
         const finalName = sanitizeText(finalNameRaw);
         const finalClient = sanitizeText(project.value.client);
         project.value.client = finalClient;
         if (!finalName) throw new Error("Введите название проекта");
         project.value.name = finalName;
-        if (!currentProjectId.value) {
+        if (forceNew || !currentProjectId.value) {
             currentProjectId.value = 'proj_' + Date.now() + '_' + Math.floor(Math.random() * 1000);
         }
+
+        const orderQty = qtySafe(project.value.qty);
+        const unitTotal = Number(totals.value.total) || 0;
+        const orderTotal = Math.round(unitTotal * orderQty);
 
         const payload = {
             id: currentProjectId.value,
             name: finalName,
             client: finalClient,
             date: new Date().toISOString(),
-            total: totals.value.total,
-            qty: qtySafe(project.value.qty),
+            total: orderTotal,
+            totalPerUnit: unitTotal,
+            totalOrder: orderTotal,
+            qty: orderQty,
             state: getFullState()
         };
 
@@ -321,23 +434,30 @@ watch(project, () => {
     };
 
     // Обертка для получения истории с применением фильтра
-    const getFilteredCloudHistory = async () => {
-        if (!hasPermission('canSaveHistory')) {
-            return { status: 'error', message: 'Недостаточно прав для просмотра истории' };
+    const getFilteredCloudHistory = async (opts = {}) => {
+        const data = await apiGetHistory(opts);
+        if (data && data.status === 'error') return data;
+
+        if (Array.isArray(data)) {
+            return filterHistoryByRetention(data);
         }
-        const data = await apiGetHistory();
-        
-        let list = [];
-        if (Array.isArray(data)) list = data;
-        else if (data && data.result && Array.isArray(data.result)) list = data.result;
-        
-        // Применяем фильтр "30 дней" здесь, перед отдачей в интерфейс
-        // Лимита .slice(0, 20) больше нет!
-        return filterHistoryByRetention(list);
+
+        if (data && Array.isArray(data.result)) {
+            return {
+                ...data,
+                result: filterHistoryByRetention(data.result)
+            };
+        }
+
+        return [];
     };
 
     const triggerAutoSave = async () => {
         try {
+            if (skipNextAutoSaveAfterReset) {
+                skipNextAutoSaveAfterReset = false;
+                return false;
+            }
             if (!hasPermission('canSaveHistory')) return false;
             let nameToUse = project.value.name;
             if (!nameToUse || !nameToUse.trim()) {
@@ -434,11 +554,23 @@ const deleteFromTrashForever = async (id) => {
                 percent: Math.min(percentFilled, 100),
                 isValid: sheetAreaCm2 > 0
             };
-        }).filter(item => item && item.totalAreaM2 > 0);
+        }).filter(item => item && Number(item.totalAreaM2) > 0);
     });
 
     const totals = computed(() => {
-        let lSum = 0; let fSum = 0; let pSum = 0; let aSum = 0; let kSum = 0; let dSum = 0; 
+        let lCostSum = 0;
+        let fCostSum = 0;
+        let pCostSum = 0;
+        let aCostSum = 0;
+        let kCostSum = 0;
+        let dCostSum = 0;
+
+        let lSaleSum = 0;
+        let fSaleSum = 0;
+        let pSaleSum = 0;
+        let aSaleSum = 0;
+        let kSaleSum = 0;
+        let dSaleSum = 0;
         
         if (materials.value.length > 0) {
             layers.value.forEach(l => {
@@ -447,8 +579,11 @@ const deleteFromTrashForever = async (id) => {
                 
                 const sheetW = positive(toNum(m.sheetW, 0));
                 const sheetH = positive(toNum(m.sheetH, 0));
-                const sheetPrice = nonNeg(toNum(m.sheetPrice, 0));
+                const materialMarkup = nonNeg(toNum(m.markupPercent, 0));
+                const sheetPriceBase = nonNeg(toNum(m.sheetPrice, 0));
+                const sheetPrice = sheetPriceBase * (1 + materialMarkup / 100);
                 const sheetAreaCm2 = (sheetW / 10) * (sheetH / 10);
+                const costPricePerCm2 = sheetAreaCm2 > 0 ? (sheetPriceBase / sheetAreaCm2) : 0;
                 const pricePerCm2 = sheetAreaCm2 > 0 ? (sheetPrice / sheetAreaCm2) : 0;
                 const w = positive(toNum(l.w, 0));
                 const h = positive(toNum(l.h, 0));
@@ -456,6 +591,7 @@ const deleteFromTrashForever = async (id) => {
                 const areaInput = positive(toNum(l.area, 0));
                 const currentArea = areaInput > 0 ? areaInput : (w > 0 && h > 0 ? (Math.round((w * h) / 100 * 10) / 10) : 0);
 
+                const matCostBase = currentArea * costPricePerCm2 * (nonNeg(toNum(settings.value.wastage, 1)));
                 const matCost = currentArea * pricePerCm2 * (nonNeg(toNum(settings.value.wastage, 1)));
                 const cutLengthMm = nonNeg(toNum(l.cut, 0));
                 const speed = toNum(m.speed, 1) > 0 ? toNum(m.speed, 1) : 1; 
@@ -472,38 +608,91 @@ const deleteFromTrashForever = async (id) => {
                     : positive(toNum(l.engravingArea, 0));
                 const engrCost = l.hasEngraving ? engravingAreaCm2 * engravingPricePerCm2 : 0;
                 
-                lSum += (matCost + cutCost + engrCost) * qty;
+                lCostSum += (matCostBase + cutCost + engrCost) * qty;
+                lSaleSum += (matCost + cutCost + engrCost) * qty;
                 
                 if (l.finishing !== 'none') {
                     const coat = coatings.value.find(c => c.id === l.finishing);
-                    if (coat && isCoatingAllowedForMaterial(coat, m)) {
+                    if (coat && coat?.pricingModel !== COATING_PRICING_MODE_DTF_LINEAR && isCoatingAllowedForMaterial(coat, m)) {
                         const areaCm2 = currentArea;
-                        const coatPrice = nonNeg(toNum(coat.price, 0));
+                        const coatPricePerCm2 = getCoatingPricePerCm2(coat);
+                        const coatCostPricePerCm2 = getCoatingPricePerCm2(coat, { includeMarkup: false });
                         const finishingMultiplier = l.finishingBothSides ? 2 : 1;
-                        fSum += (areaCm2 * coatPrice * finishingMultiplier) * qty;
+                        fCostSum += (areaCm2 * coatCostPricePerCm2 * finishingMultiplier) * qty;
+                        fSaleSum += (areaCm2 * coatPricePerCm2 * finishingMultiplier) * qty;
                     }
                 }
             });
         }
         
-        const baseForPercent = lSum + fSum;
-        const calcList = (list) => {
+        const baseForPercentCost = lCostSum + fCostSum;
+        const baseForPercentSale = lSaleSum + fSaleSum;
+
+        const resolveItemFromDb = (item, dbListRef, useDbMarkup = true) => {
+            const dbList = dbListRef?.value;
+            if (!item?.dbId || !Array.isArray(dbList) || !dbList.length) return item;
+            const dbItem = dbList.find((entry) => entry?.id === item.dbId);
+            if (!dbItem) return item;
+
+            const markup = Math.max(0, toNum(dbItem?.markupPercent, 0));
+            const factor = useDbMarkup ? (1 + markup / 100) : 1;
+            const nextType = dbItem?.type || item?.type || 'fixed';
+            const shouldUseValue = usesValueField(nextType);
+            const dbValue = toNum(
+                nextType === 'percent'
+                    ? (dbItem?.price ?? dbItem?.value ?? 0)
+                    : (dbItem?.value ?? dbItem?.price ?? 0),
+                0
+            ) * factor;
+            const dbPrice = toNum(dbItem?.price ?? dbItem?.value ?? 0, 0) * factor;
+            const dbRollWidth = toNum(dbItem?.rollWidthMm ?? dbItem?.rollWidth, 0);
+
+            return {
+                ...item,
+                name: dbItem?.name ?? item?.name,
+                type: nextType,
+                value: shouldUseValue
+                    ? (hasNumericInput(item?.value) ? toNum(item.value, 0) : dbValue)
+                    : null,
+                price: shouldUseValue
+                    ? null
+                    : (hasNumericInput(item?.price) ? toNum(item.price, 0) : dbPrice),
+                rollWidthMm: hasNumericInput(item?.rollWidthMm)
+                    ? toNum(item.rollWidthMm, 0)
+                    : (dbRollWidth || item?.rollWidthMm),
+            };
+        };
+        const calcList = (list, dbListRef, baseForPercent, useDbMarkup = true) => {
             let sum = 0;
-            list.forEach(item => {
+            list.forEach(itemRaw => {
+                const item = resolveItemFromDb(itemRaw, dbListRef, useDbMarkup);
                 const valRaw = toNum(item.value, 0);
+                const percentValRaw = toNum(item?.value, NaN);
                 const priceRaw = toNum(item.price, 0);
                 const qty = qtySafe(item.qty);
                 const val = nonNeg(valRaw);
                 const price = nonNeg(priceRaw);
                 const w = positive(toNum(item.w, 0));
+                const l = positive(toNum(item.l, 0));
                 const h = positive(toNum(item.h, 0));
                 const length = nonNeg(toNum(item.length, 0));
-                if (item.type === 'percent') sum += baseForPercent * (clamp(val, 0, 100) / 100); 
+                if (item.type === 'percent') {
+                    const percentVal = Number.isFinite(percentValRaw) ? Math.max(0, percentValRaw) : Math.max(0, priceRaw);
+                    sum += baseForPercent * (percentVal / 100);
+                }
+                else if (item.type === 'pieces') sum += price * qty;
+                else if (item.type === 'fixed') sum += val * qty;
                 else if (item.type === 'linear') sum += price * (length / 1000) * qty;
                 else if (item.type === 'linear_mm') sum += price * length * qty;
                 else if (item.type === 'area') sum += price * ((w * h) / 1000000) * qty;
+                else if (item.type === 'area_cm2') sum += price * ((w * h) / 100) * normalizeSides(item.sides) * qty;
                 else if (item.type === 'area_mm2') sum += price * (w * h) * qty;
                 else if (item.type === 'roll') sum += price * (length / 1000) * qty;
+                else if (item.type === 'box_mm') {
+                    // Price for box mode is treated as price per m2 of material.
+                    const boxAreaMm2 = 2 * ((w * l) + (w * h) + (l * h));
+                    sum += price * (boxAreaMm2 / 1000000) * qty;
+                }
                 else {
                     if (val > 0) sum += val;
                     else if (price > 0) sum += price * qty;
@@ -512,27 +701,45 @@ const deleteFromTrashForever = async (id) => {
             return sum;
         };
 
-        pSum = calcList(processing.value); 
-        aSum = calcList(accessories.value); 
-        kSum = calcList(packaging.value); 
-        dSum = calcList(design.value);
+        pCostSum = calcList(processing.value, processingDB, baseForPercentCost, false);
+        aCostSum = calcList(accessories.value, accessoriesDB, baseForPercentCost, false);
+        kCostSum = calcList(packaging.value, packagingDB, baseForPercentCost, false);
+        dCostSum = calcList(design.value, designDB, baseForPercentCost, false);
 
-        let subTotal = lSum + fSum + pSum + aSum + kSum + dSum;
+        pSaleSum = calcList(processing.value, processingDB, baseForPercentSale, true);
+        aSaleSum = calcList(accessories.value, accessoriesDB, baseForPercentSale, true);
+        kSaleSum = calcList(packaging.value, packagingDB, baseForPercentSale, true);
+        dSaleSum = calcList(design.value, designDB, baseForPercentSale, true);
+
+        const costSubTotal = lCostSum + fCostSum + pCostSum + aCostSum + kCostSum + dCostSum;
+        const saleSubTotal = lSaleSum + fSaleSum + pSaleSum + aSaleSum + kSaleSum + dSaleSum;
         const markupPct = nonNeg(toNum(project.value.markup, 0));
         const discountPct = clamp(toNum(project.value.discount, 0), 0, 100);
-        let markupRub = subTotal * (markupPct / 100);
-        let totalWithMarkup = subTotal + markupRub;
+        let markupRub = saleSubTotal * (markupPct / 100);
+        let totalWithMarkup = saleSubTotal + markupRub;
         let discountRub = totalWithMarkup * (discountPct / 100);
-        let grandTotal = Math.max(0, totalWithMarkup - discountRub);
+        const calculatedTotal = Math.max(0, totalWithMarkup - discountRub);
+        const minimumOrderPrice = nonNeg(toNum(settings.value.minimumOrderPrice, 0));
+        const grandTotal = Math.max(minimumOrderPrice, calculatedTotal);
+        const minimumApplied = minimumOrderPrice > 0 && calculatedTotal < minimumOrderPrice;
 
         return { 
-            layers: Math.round(lSum + fSum), 
-            processing: Math.round(pSum), 
-            accessories: Math.round(aSum), 
-            packaging: Math.round(kSum), 
-            design: Math.round(dSum), 
+            layers: Math.round(lSaleSum + fSaleSum), 
+            processing: Math.round(pSaleSum), 
+            accessories: Math.round(aSaleSum), 
+            packaging: Math.round(kSaleSum), 
+            design: Math.round(dSaleSum), 
+            costLayers: Math.round(lCostSum + fCostSum),
+            costProcessing: Math.round(pCostSum),
+            costAccessories: Math.round(aCostSum),
+            costPackaging: Math.round(kCostSum),
+            costDesign: Math.round(dCostSum),
+            costTotal: Math.round(costSubTotal),
             markupRub: Math.round(markupRub), 
             discountRub: Math.round(discountRub), 
+            calculatedTotal: Math.round(calculatedTotal),
+            minimumOrderPrice: Math.round(minimumOrderPrice),
+            minimumApplied,
             total: Math.round(grandTotal) 
         };
     });

@@ -23,6 +23,8 @@ export type Permission =
   // users / admin
   | 'users.list.view'
   | 'users.permissions.edit'
+  // invoice
+  | 'invoice.stamp.edit'
   // trash
   | 'trash.view'
   | 'trash.restore'
@@ -31,6 +33,7 @@ export type Permission =
   // history
   | 'history.view'
   | 'history.write'
+  | 'history.bulkDelete'
   // kanban
   | 'kanban.view'
   | 'kanban.task.read'
@@ -39,16 +42,17 @@ export type Permission =
   | 'kanban.task.delete';
 
 export const ROLE_CAPS: Record<Role, Permission[]> = {
-  guest: ['calc.use'],
-  client: ['calc.use'],
+  guest: ['calc.use', 'invoice.stamp.edit'],
+  client: ['calc.use', 'invoice.stamp.edit'],
   // team/admin permissions are granted via "checkboxes" (users/{uid}.permissions)
   team: [
     'calc.use',
+    'invoice.stamp.edit',
     'settings.global.view',
     'settings.materials.read',
     'settings.prices.read',
     'history.view',
-    'history.write',
+    'history.write', 'history.bulkDelete',
     'trash.view',
     'trash.restore',
     'trash.delete',
@@ -70,8 +74,9 @@ export const ROLE_CAPS: Record<Role, Permission[]> = {
     'settings.prices.read',
     'settings.prices.write',
     'users.list.view',
+    'invoice.stamp.edit',
     'history.view',
-    'history.write',
+    'history.write', 'history.bulkDelete',
     'trash.view',
     'trash.restore',
     'trash.delete',
@@ -97,12 +102,13 @@ export const ROLE_CAPS: Record<Role, Permission[]> = {
     'settings.prices.write',
     'users.list.view',
     'users.permissions.edit',
+    'invoice.stamp.edit',
     'trash.view',
     'trash.restore',
     'trash.delete',
     'trash.purge',
     'history.view',
-    'history.write',
+    'history.write', 'history.bulkDelete',
     'kanban.view',
     'kanban.task.read',
     'kanban.task.create',

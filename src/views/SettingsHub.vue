@@ -1,17 +1,28 @@
 <script setup>
-import { ref, computed } from 'vue';
+import { ref, computed, onMounted } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { useDatabase } from '@/composables/useDatabase'; 
 import { useHaptics } from '@/composables/useHaptics';
 import { PageScrollWrapper } from '@/ui-core'; 
 import ModernSelect from '@/components/ModernSelect.vue';
 import UserKanban from '@/components/admin/UserKanban.vue'; 
-import { matchesSearchQuery } from '@/utils/searchIndex';
+import { buildDeepSearchBlob, getSearchVariants, matchesSearchBlob, matchesSearchQuery, normalizeSearchValue } from '@/utils/searchIndex';
 
 const router = useRouter();
 const route = useRoute();
 const { impactLight } = useHaptics();
-const { hasPermission, userRole } = useDatabase(); // Используем проверку прав
+const {
+    hasPermission,
+    userRole,
+    isOfflineMode,
+    materials,
+    coatings,
+    processingDB,
+    accessoriesDB,
+    packagingDB,
+    designDB,
+    settings,
+} = useDatabase(); // Используем проверку прав
 
 const queryCalcId = computed(() => {
     const raw = route.query.calc;
@@ -69,6 +80,32 @@ const modules = [
         category: 'laser', 
         iconType: 'laser', 
         route: '/settings/laser',
+        resultSections: [
+            {
+                id: 'config',
+                label: 'Конфигурация',
+                tab: 'config',
+                single: true,
+                title: 'Конфигурация лазера',
+                source: (ctx) => ctx.settings,
+            },
+            { id: 'materials', label: 'Материалы', tab: 'materials', source: (ctx) => ctx.materials },
+            { id: 'coatings', label: 'Покрытия', tab: 'coatings', source: (ctx) => ctx.coatings },
+            { id: 'processing', label: 'Услуги', tab: 'processing', source: (ctx) => ctx.processing },
+            { id: 'accessories', label: 'Фурнитура', tab: 'accessories', source: (ctx) => ctx.accessories },
+            { id: 'packaging', label: 'Упаковка', tab: 'packaging', source: (ctx) => ctx.packaging },
+            { id: 'design', label: 'Дизайн', tab: 'design', source: (ctx) => ctx.design },
+        ],
+        searchSource: () => ({
+            calculatorId: 'laser',
+            settings: settings.value,
+            materials: materials.value,
+            coatings: coatings.value,
+            processing: processingDB.value,
+            accessories: accessoriesDB.value,
+            packaging: packagingDB.value,
+            design: designDB.value,
+        }),
         // legacy + canonical (покажем модуль, если доступ к настройкам разрешён)
         permission: ['canViewSettings', 'settings.global.view', 'settings.laser.view'],
         keywords: ['лазер', 'резка', 'гравировка', 'минуты', 'скорость', 'мощность', 'настройки', 'глобальные']
@@ -87,11 +124,12 @@ const modules = [
     { 
         id: 'dtf', 
         name: 'ДТФ Печать', 
-        desc: 'Пленка и перенос (Скоро)', 
-        active: false, 
+        desc: 'Отдельный контур настроек DTF: пресеты, рулоны, себестоимость и запуск отдельного калькулятора.', 
+        active: true, 
         category: 'textile', 
         iconType: 'shirt', 
         route: '/settings/dtf',
+        permission: ['canViewSettings', 'settings.global.view', 'settings.laser.view'],
         keywords: ['футболка', 'худи', 'пленка', 'нанесение', 'ткань', 'хлопок'],
 },
 ];
@@ -127,16 +165,154 @@ const adminModulesData = [
     }
 ];
 
+const moduleDeepIndex = computed(() => {
+    const index = {};
+
+    modules.forEach((moduleItem) => {
+        const source = typeof moduleItem?.searchSource === 'function'
+            ? moduleItem.searchSource()
+            : null;
+
+        if (!source) {
+            index[moduleItem.id] = '';
+            return;
+        }
+
+        // NOTE: maxDepth/maxItems keep search responsive while still indexing most nested params.
+        index[moduleItem.id] = buildDeepSearchBlob(source, 4, 140);
+    });
+
+    return index;
+});
+
+const isModuleVisibleByTag = (moduleItem) => {
+    return activeHubTag.value === 'all' || moduleItem.category === activeHubTag.value;
+};
+
+const safeNumber = (value) => {
+    const numeric = Number(value);
+    return Number.isFinite(numeric) ? numeric : null;
+};
+
+const buildDetailMeta = (sectionId, item) => {
+    if (!item || typeof item !== 'object') return '';
+
+    if (sectionId === 'config') {
+        const minOrder = safeNumber(item.minimumOrderPrice);
+        const minuteCost = safeNumber(item.laserMinuteCost);
+        const engraving = safeNumber(item.engravingPrice);
+        const parts = [];
+        if (minOrder !== null) parts.push(`Мин. заказ ${minOrder}`);
+        if (minuteCost !== null) parts.push(`Минута ${minuteCost}`);
+        if (engraving !== null) parts.push(`Грав. ${engraving}`);
+        return parts.join(' · ');
+    }
+
+    const parts = [];
+    const type = normalizeSearchValue(item.type);
+    const priceBySection = sectionId === 'materials'
+        ? safeNumber(item.sheetPrice)
+        : sectionId === 'processing'
+            ? safeNumber(item.value ?? item.price)
+            : safeNumber(item.price);
+    const markup = safeNumber(item.markupPercent);
+
+    if (type) parts.push(type);
+    if (priceBySection !== null) parts.push(`${priceBySection}`);
+    if (markup !== null && markup > 0) parts.push(`+${markup}%`);
+
+    if (sectionId === 'materials') {
+        const thickness = safeNumber(item.thickness);
+        if (thickness !== null) parts.push(`${thickness} мм`);
+    }
+
+    return parts.slice(0, 3).join(' · ');
+};
+
+const detailedSearchResults = computed(() => {
+    const query = searchQuery.value;
+    const variants = getSearchVariants(query);
+    if (!variants.length) return [];
+
+    const results = [];
+
+    modules
+        .filter(m => canAccess(m))
+        .filter(m => isModuleVisibleByTag(m))
+        .forEach((moduleItem) => {
+            const source = typeof moduleItem?.searchSource === 'function'
+                ? moduleItem.searchSource()
+                : null;
+            const sections = Array.isArray(moduleItem?.resultSections) ? moduleItem.resultSections : [];
+
+            if (!source || !sections.length) return;
+
+            sections.forEach((section) => {
+                const raw = typeof section?.source === 'function' ? section.source(source) : null;
+
+                if (section?.single) {
+                    const blob = buildDeepSearchBlob(raw, 3, 120);
+                    if (!matchesSearchBlob(blob, query)) return;
+
+                    results.push({
+                        id: `${moduleItem.id}:${section.id}:single`,
+                        moduleName: moduleItem.name,
+                        moduleRoute: moduleItem.route,
+                        sectionLabel: section.label,
+                        sectionTab: section.tab || section.id,
+                        title: section.title || section.label,
+                        meta: buildDetailMeta(section.id, raw),
+                        score: 1,
+                    });
+                    return;
+                }
+
+                const list = Array.isArray(raw) ? raw : [];
+                list.forEach((entry, index) => {
+                    const blob = buildDeepSearchBlob(entry, 3, 80);
+                    if (!matchesSearchBlob(blob, query)) return;
+
+                    const title = String(entry?.name || entry?.label || `${section.label} ${index + 1}`).trim();
+                    const normalizedTitle = normalizeSearchValue(title);
+                    const score = variants.some(v => normalizedTitle.includes(v)) ? 2 : 1;
+
+                    results.push({
+                        id: `${moduleItem.id}:${section.id}:${entry?.id || index}`,
+                        moduleName: moduleItem.name,
+                        moduleRoute: moduleItem.route,
+                        sectionLabel: section.label,
+                        sectionTab: section.tab || section.id,
+                        itemId: String(entry?.id || ''),
+                        title,
+                        meta: buildDetailMeta(section.id, entry),
+                        score,
+                    });
+                });
+            });
+        });
+
+    return results
+        .sort((a, b) => b.score - a.score || a.title.localeCompare(b.title, 'ru'))
+        .slice(0, 24);
+});
+
 // --- ЛОГИКА ФИЛЬТРАЦИИ ---
 
 const matchesSearch = (moduleItem) => {
-    return matchesSearchQuery({
+    const baseMatch = matchesSearchQuery({
         name: moduleItem?.name,
         desc: moduleItem?.desc,
         keywords: moduleItem?.keywords,
         category: moduleItem?.category,
         route: moduleItem?.route,
     }, searchQuery.value);
+
+    if (baseMatch) return true;
+
+    const deepBlob = moduleDeepIndex.value?.[moduleItem?.id] || '';
+    if (!deepBlob) return false;
+
+    return matchesSearchBlob(deepBlob, searchQuery.value);
 };
 
 const canAccess = (moduleItem) => {
@@ -150,7 +326,7 @@ const canAccess = (moduleItem) => {
 const filteredModules = computed(() => {
     return modules
         .filter(m => canAccess(m))
-        .filter(m => activeHubTag.value === 'all' || m.category === activeHubTag.value)
+    .filter(m => isModuleVisibleByTag(m))
         .filter(m => matchesSearch(m));
 });
 
@@ -164,10 +340,34 @@ const filteredAdminModules = computed(() => {
         .filter(m => matchesSearch(m));
 });
 
-const openModule = (mod) => {
+const openModule = (mod, extraQuery = {}) => {
     if (!mod.active) return;
     impactLight();
-    router.push({ path: mod.route, query: navigationQuery.value });
+    router.push({
+        path: mod.route,
+        query: {
+            ...navigationQuery.value,
+            ...extraQuery,
+        },
+    });
+};
+
+const openDetailedResult = (result) => {
+    impactLight();
+    const nextQuery = {
+        ...navigationQuery.value,
+        q: searchQuery.value,
+        tab: result.sectionTab,
+    };
+
+    if (result?.itemId) {
+        nextQuery.item = result.itemId;
+    }
+
+    router.push({
+        path: result.moduleRoute,
+        query: nextQuery,
+    });
 };
 
 const goBack = () => {
@@ -178,6 +378,17 @@ const goBack = () => {
     }
     router.push('/');
 };
+
+onMounted(() => {
+    if (!isOfflineMode.value) return;
+
+    if (route.query.from === 'calc') {
+        router.replace(`/calc/${queryCalcId.value}`);
+        return;
+    }
+
+    router.replace('/');
+});
 </script>
 
 <template>
@@ -204,7 +415,7 @@ const goBack = () => {
                             <input 
                                 v-model="searchQuery" 
                                 class="block w-full h-full pl-12 pr-12 bg-transparent rounded-2xl text-sm font-bold outline-none text-inherit placeholder-gray-400/70 transition-colors cursor-text" 
-                                placeholder="Найти модуль..."
+                                placeholder="Найти модуль или любой параметр..."
                             >
                             <button v-if="searchQuery" @click="searchQuery=''" class="absolute inset-y-0 right-0 pr-4 flex items-center text-gray-400 hover:text-black dark:hover:text-white cursor-pointer z-10">
                                 <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
@@ -267,7 +478,30 @@ const goBack = () => {
                             </div>
                         </div>
 
-                        <div v-if="filteredModules.length === 0 && filteredAdminModules.length === 0" class="text-center py-20 text-gray-400 font-bold bg-white dark:bg-[#1C1C1E] rounded-3xl border border-dashed border-gray-200 dark:border-white/10">
+                        <div v-if="detailedSearchResults.length > 0">
+                            <h3 class="text-xs font-bold text-gray-400 uppercase tracking-widest ml-4 mb-3">Точные совпадения</h3>
+                            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                <div
+                                    v-for="result in detailedSearchResults"
+                                    :key="result.id"
+                                    @click="openDetailedResult(result)"
+                                    class="bg-white dark:bg-[#1C1C1E] rounded-3xl p-5 border border-gray-100 dark:border-white/5 shadow-[0_10px_30px_-10px_rgba(0,0,0,0.05)] dark:shadow-black/30 transition-all duration-300 group relative overflow-hidden cursor-pointer transform-gpu no-flicker hover:shadow-2xl hover:-translate-y-1 hover:border-gray-200 dark:hover:border-white/20"
+                                >
+                                    <div class="flex items-start justify-between gap-3">
+                                        <div class="min-w-0">
+                                            <p class="text-[10px] uppercase tracking-[0.12em] text-gray-400 font-bold mb-1">{{ result.moduleName }} · {{ result.sectionLabel }}</p>
+                                            <h4 class="text-lg font-black text-gray-900 dark:text-white leading-tight truncate">{{ result.title }}</h4>
+                                            <p v-if="result.meta" class="text-xs text-gray-500 dark:text-gray-400 font-semibold mt-2 truncate">{{ result.meta }}</p>
+                                        </div>
+                                        <div class="text-black dark:text-white shrink-0 opacity-0 group-hover:opacity-100 transition-opacity duration-300">
+                                            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M9 18l6-6-6-6"/></svg>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div v-if="filteredModules.length === 0 && filteredAdminModules.length === 0 && detailedSearchResults.length === 0" class="text-center py-20 text-gray-400 font-bold bg-white dark:bg-[#1C1C1E] rounded-3xl border border-dashed border-gray-200 dark:border-white/10">
                             Ничего не найдено
                         </div>
 

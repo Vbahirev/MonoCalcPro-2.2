@@ -37,7 +37,7 @@ service cloud.firestore {
        1. ГЛОБАЛЬНЫЕ НАСТРОЙКИ + ЛАЗЕР
        ================================ */
     match /settings/{docId} {
-      allow read: if true;
+      allow read: if isSignedIn();
 
       // IMPORTANT: allow superadmin even if user profile role is wrong/missing
       allow write: if isSuperAdmin()

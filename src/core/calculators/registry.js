@@ -13,7 +13,12 @@ const calculators = Object.values(modules)
   .map((m) => m?.default)
   .filter(Boolean)
   // стабильный порядок (важно для дефолтного калькулятора)
-  .sort((a, b) => String(a.manifest?.name || '').localeCompare(String(b.manifest?.name || '')));
+  .sort((a, b) => {
+    const orderA = Number(a?.manifest?.order ?? 999);
+    const orderB = Number(b?.manifest?.order ?? 999);
+    if (orderA !== orderB) return orderA - orderB;
+    return String(a.manifest?.name || '').localeCompare(String(b.manifest?.name || ''));
+  });
 
 export const calculatorList = calculators.map((c) => c.manifest);
 

@@ -6,7 +6,10 @@ const props = defineProps({
     modelValue: [String, Number],
     options: { type: Array, default: () => [] },
     grouped: { type: [Array, Object], default: () => null },
-    placeholder: { type: String, default: 'Выберите' }
+    placeholder: { type: String, default: 'Выберите' },
+    columns: { type: Number, default: 1 },
+    fitToContent: { type: Boolean, default: false },
+    noTruncate: { type: Boolean, default: false }
 });
 
 const emit = defineEmits(['update:modelValue']);
@@ -16,11 +19,24 @@ const isOpen = ref(false);
 const localValue = ref(null);
 const isDesktop = ref(false);
 const containerRef = ref(null);
+const instanceId = `modern-select-${Math.random().toString(36).slice(2, 10)}`;
 const dropdownWidth = ref(0);
 const dropdownLeft = ref(0);
 const dropdownTop = ref(0);
 const dropdownBottom = ref(null);
 const dropdownMaxHeight = ref(320);
+const normalizedColumns = computed(() => {
+    const n = Number(props.columns);
+    if (!Number.isFinite(n)) return 1;
+    return Math.min(4, Math.max(1, Math.round(n)));
+});
+const isCompactMultiCol = computed(() => normalizedColumns.value > 1);
+
+const estimatedLabelWidth = computed(() => {
+    const text = String(longestLabel.value || props.placeholder || '');
+    const px = text.length * 8 + 56;
+    return Math.min(460, Math.max(110, px));
+});
 
 watch(() => props.modelValue, (val) => {
     localValue.value = val;
@@ -32,7 +48,9 @@ const checkScreen = () => {
 
 const updateWidth = () => {
     if (containerRef.value) {
-        dropdownWidth.value = containerRef.value.offsetWidth;
+        const baseWidth = containerRef.value.offsetWidth;
+        // Keep the trigger compact when closed; expanded width is handled only on open.
+        dropdownWidth.value = baseWidth;
     }
 };
 
@@ -44,12 +62,23 @@ const updateDropdownPosition = () => {
     const gap = 10;
     const minHeight = 120;
 
+    const compactDesktopMin = isDesktop.value && isCompactMultiCol.value ? 220 : rect.width;
+    // Expand only while open so collapsed controls do not affect layout.
+    const desiredWidth = isOpen.value
+        ? Math.max(rect.width, estimatedLabelWidth.value)
+        : rect.width;
+    const maxAllowedWidth = Math.max(120, window.innerWidth - viewportPadding * 2);
+    const resolvedWidth = Math.min(Math.max(compactDesktopMin, desiredWidth), maxAllowedWidth);
+
+    // Expand symmetrically around the trigger center whenever possible.
+    const centeredLeft = rect.left + (rect.width - resolvedWidth) / 2;
     const safeLeft = Math.max(
         viewportPadding,
-        Math.min(rect.left, window.innerWidth - rect.width - viewportPadding)
+        Math.min(centeredLeft, window.innerWidth - resolvedWidth - viewportPadding)
     );
+
     dropdownLeft.value = safeLeft;
-    dropdownWidth.value = rect.width;
+    dropdownWidth.value = resolvedWidth;
 
     const spaceBelow = window.innerHeight - rect.bottom - viewportPadding;
     dropdownBottom.value = null;
@@ -70,10 +99,16 @@ const desktopDropdownStyle = computed(() => {
     return { ...style, top: `${dropdownTop.value}px` };
 });
 
+const containerStyle = computed(() => {
+    if (!props.fitToContent) return {};
+    return { minWidth: `${estimatedLabelWidth.value}px` };
+});
+
 onMounted(() => {
     checkScreen();
     window.addEventListener('resize', checkScreen);
     window.addEventListener('click', onClickOutside);
+    window.addEventListener('modern-select-opened', onAnotherSelectOpened);
     window.addEventListener('resize', updateWidth);
     window.addEventListener('resize', updateDropdownPosition);
     window.addEventListener('scroll', updateDropdownPosition, true);
@@ -83,10 +118,17 @@ onMounted(() => {
 onUnmounted(() => {
     window.removeEventListener('resize', checkScreen);
     window.removeEventListener('click', onClickOutside);
+    window.removeEventListener('modern-select-opened', onAnotherSelectOpened);
     window.removeEventListener('resize', updateWidth);
     window.removeEventListener('resize', updateDropdownPosition);
     window.removeEventListener('scroll', updateDropdownPosition, true);
 });
+
+const onAnotherSelectOpened = (event) => {
+    const openedId = event?.detail?.id;
+    if (!openedId || openedId === instanceId) return;
+    if (isOpen.value) close();
+};
 
 const onClickOutside = (event) => {
     if (isDesktop.value && isOpen.value && containerRef.value && !containerRef.value.contains(event.target)) {
@@ -157,6 +199,7 @@ const open = () => {
     if (!isOpen.value) {
         impactMedium();
         updateWidth();
+        window.dispatchEvent(new CustomEvent('modern-select-opened', { detail: { id: instanceId } }));
         isOpen.value = true;
         nextTick(() => {
             updateDropdownPosition();
@@ -182,31 +225,48 @@ const select = (item) => {
 const isSelected = (item) => {
     return (item.value === localValue.value || item.id === localValue.value);
 };
+
+const sectionItemsClass = computed(() => {
+    if (isDesktop.value) {
+        if (!isCompactMultiCol.value) return 'flex flex-col gap-1';
+        if (normalizedColumns.value === 2) return 'grid gap-1 grid-cols-2';
+        if (normalizedColumns.value === 3) return 'grid gap-1 grid-cols-3';
+        return 'grid gap-1 grid-cols-4';
+    }
+    if (!isCompactMultiCol.value) return 'grid grid-cols-2 gap-3';
+    if (normalizedColumns.value === 2) return 'grid gap-3 grid-cols-2';
+    if (normalizedColumns.value === 3) return 'grid gap-3 grid-cols-3';
+    return 'grid gap-3 grid-cols-4';
+});
 </script>
 
 <template>
     <div 
-        class="relative h-14 bg-white dark:bg-[#232326] rounded-2xl border border-gray-200 dark:border-white/10 shadow-sm dark:shadow-black/40 cursor-pointer select-none group transform-gpu no-flicker transition-all duration-300 ease-out"
+        class="relative min-w-0 overflow-hidden h-14 bg-white dark:bg-[#232326] rounded-2xl border border-gray-200 dark:border-white/10 shadow-sm dark:shadow-black/40 cursor-pointer select-none group transform-gpu no-flicker transition-all duration-300 ease-out"
         :class="isOpen ? 'border-gray-400 dark:border-white/30 ring-2 ring-gray-200/70 dark:ring-white/10' : 'hover:border-gray-300 dark:hover:border-white/20'"
+        :style="containerStyle"
         ref="containerRef"
         @click.stop="open"
     >
-        <div class="w-full h-full grid place-items-center px-4">
+        <div class="w-full h-full grid place-items-center px-3">
             <div class="col-start-1 row-start-1 invisible flex items-center gap-3 opacity-0 pointer-events-none">
-                <span class="font-bold text-xs uppercase tracking-wider whitespace-nowrap">{{ longestLabel }}</span>
+                <span class="font-bold text-[11px] tracking-wide whitespace-nowrap">{{ longestLabel }}</span>
                 <svg class="w-3.5 h-3.5 shrink-0" viewBox="0 0 24 24"></svg>
             </div>
 
-            <div class="col-start-1 row-start-1 flex items-center justify-center w-full relative">
-                <span class="text-center font-bold text-xs uppercase tracking-wider transition-colors duration-300 truncate px-2 text-inherit">
+            <div class="col-start-1 row-start-1 flex items-center justify-center w-full relative pr-9 pl-2">
+                <span :class="[
+                    'max-w-full text-center font-bold tracking-wide transition-colors duration-300 px-1 text-inherit leading-tight text-[clamp(10px,1.4vw,11px)]',
+                    noTruncate ? 'whitespace-nowrap' : 'truncate'
+                ]">
                     {{ selectedLabel || placeholder }}
                 </span>
                 
-                <div class="absolute right-[-4px]">
-                    <svg class="w-3.5 h-3.5 opacity-60 transition-transform duration-300 text-inherit" 
+                <div class="absolute inset-y-0 right-3 w-4 flex items-center justify-center pointer-events-none">
+                    <svg class="w-4 h-4 opacity-70 transition-transform duration-300 text-inherit" 
                          :class="{'rotate-180': isOpen}"
                          fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <polyline points="6 9 12 15 18 9" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"></polyline>
+                        <polyline points="6 9 12 15 18 9" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"></polyline>
                     </svg>
                 </div>
             </div>
@@ -242,15 +302,15 @@ const isSelected = (item) => {
                                     <span v-else>{{ section.title }}</span>
                                 </div>
 
-                                <div :class="isDesktop ? 'flex flex-col gap-1' : 'grid grid-cols-2 gap-3'">
+                                <div :class="sectionItemsClass">
                                     <button 
                                         v-for="item in section.items" 
                                         :key="item.id"
                                         @click.stop="select(item)"
-                                        class="relative transition-colors duration-200 flex items-center justify-between group w-full"
+                                        class="relative transition-colors duration-200 flex items-center justify-between group w-full overflow-hidden"
                                         :class="[
                                             isDesktop 
-                                                ? 'px-3 py-2.5 rounded-xl text-[10px] font-bold uppercase tracking-wider'
+                                                ? (isCompactMultiCol ? 'px-2 py-2 rounded-xl text-[10px] font-bold uppercase tracking-wider justify-center' : 'px-3 py-2.5 rounded-xl text-[10px] font-bold uppercase tracking-wider')
                                                 : 'flex flex-col items-center justify-center p-4 rounded-2xl border active:scale-[0.96] min-h-[80px]',
                                             isSelected(item) 
                                                 ? (isDesktop ? 'bg-black dark:bg-white text-white dark:text-black' : 'bg-black border-black text-white shadow-lg shadow-black/20') 
@@ -260,11 +320,18 @@ const isSelected = (item) => {
                                         <div v-if="!isDesktop && isSelected(item)" class="absolute top-2 right-2 text-white/40">
                                             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M20 6L9 17l-5-5"/></svg>
                                         </div>
-                                        <span class="leading-tight break-words flex-1" :class="[isDesktop ? 'text-center' : 'text-[14px] text-center w-full px-1 font-bold']">
+                                        <span class="leading-tight break-words" :class="[
+                                            isDesktop
+                                                ? (noTruncate ? 'text-center whitespace-normal break-words w-full text-[clamp(10px,1vw,11px)]' : 'text-center truncate w-full text-[clamp(10px,1vw,11px)]')
+                                                : 'text-[clamp(12px,3.2vw,14px)] text-center w-full px-1 font-bold'
+                                        ]">
                                             {{ item.label }}
                                         </span>
-                                        <div v-if="isDesktop && isSelected(item)" class="absolute right-3 top-1/2 -translate-y-1/2">
+                                        <div v-if="isDesktop && isSelected(item) && !isCompactMultiCol" class="absolute right-2 top-1/2 -translate-y-1/2">
                                             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>
+                                        </div>
+                                        <div v-if="isDesktop && isSelected(item) && isCompactMultiCol" class="ml-1 shrink-0">
+                                            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>
                                         </div>
                                     </button>
                                 </div>
@@ -295,18 +362,12 @@ const isSelected = (item) => {
 .modern-select-scroll {
     overscroll-behavior: contain;
     -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
 }
 
 .modern-select-scroll::-webkit-scrollbar {
-    width: 8px;
-}
-
-.modern-select-scroll::-webkit-scrollbar-thumb {
-    background: rgba(156, 163, 175, 0.55);
-    border-radius: 9999px;
-}
-
-html.dark .modern-select-scroll::-webkit-scrollbar-thumb {
-    background: rgba(148, 163, 184, 0.35);
+    width: 0;
+    height: 0;
+    display: none;
 }
 </style>

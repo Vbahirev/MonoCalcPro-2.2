@@ -9,13 +9,19 @@ import { buildDeepSearchBlob, matchesSearchBlob } from '@/utils/searchIndex';
 
 const router = useRouter();
 const route = useRoute();
-const { settings, getCloudHistory, loadState, deleteFromHistory, totals } = useCalculator('laser');
+const { settings, getCloudHistory, loadState, deleteFromHistory, totals, hasPermission } = useCalculator('laser');
 const { impactLight, impactMedium, notificationSuccess, notificationError } = useHaptics();
+const DTF_HISTORY_LOAD_KEY = 'monocalc_dtf_history_load_state_v1';
 
 const queryCalcId = computed(() => {
     const raw = route.query.calc;
     if (Array.isArray(raw)) return raw[0] || 'laser';
     return raw || 'laser';
+});
+
+// --- ПРАВА ---
+const canBulkDelete = computed(() => {
+    try { return hasPermission('history.bulkDelete'); } catch(e) { return false; }
 });
 
 // --- СОСТОЯНИЕ ---
@@ -26,6 +32,50 @@ const error = ref(null);
 const searchQuery = ref('');
 const windowWidth = ref(window.innerWidth);
 const confirmModal = ref({ show: false, type: null, item: null });
+const deletingProjectId = ref(null);
+
+// --- ПАКЕТНОЕ УДАЛЕНИЕ ---
+const isSelectionMode = ref(false);
+const selectedIds = ref(new Set());
+const isBulkDeleting = ref(false);
+
+const toggleSelectionMode = () => {
+    impactLight();
+    isSelectionMode.value = !isSelectionMode.value;
+    if (!isSelectionMode.value) selectedIds.value.clear();
+};
+
+const toggleSelection = (project) => {
+    if (!isSelectionMode.value) return;
+    impactLight();
+    const newSet = new Set(selectedIds.value);
+    if (newSet.has(project.id)) newSet.delete(project.id);
+    else newSet.add(project.id);
+    selectedIds.value = newSet;
+};
+
+const selectAllCurrent = () => {
+    impactLight();
+    const nextSet = new Set();
+    filteredProjects.value.forEach(p => { if (!p.isPlaceholder) nextSet.add(p.id); });
+    selectedIds.value = nextSet;
+};
+
+const clearSelection = () => {
+    impactLight();
+    selectedIds.value.clear();
+    isSelectionMode.value = false;
+};
+
+const askToLoad = (project) => {
+    if (project.isPlaceholder) return;
+    if (isSelectionMode.value) {
+        toggleSelection(project);
+        return;
+    }
+    impactMedium();
+    confirmModal.value = { show: true, type: 'load', item: project };
+};
 
 // --- ПАГИНАЦИЯ ---
 const PAGE_SIZE = 50;
@@ -119,8 +169,16 @@ const activeDates = computed(() => {
     const dates = new Set();
     projects.value.forEach(p => {
         try {
-            const d = new Date(p.date.includes('T') ? p.date : convertRuDate(p.date));
-            if (!isNaN(d)) dates.add(`${d.getDate()}-${d.getMonth()}-${d.getFullYear()}`);
+            if (!p.date) return;
+            let d;
+            if (typeof p.date === 'object') {
+                d = typeof p.date.toDate === 'function' ? p.date.toDate() : (p.date instanceof Date ? p.date : null);
+            } else if (typeof p.date === 'string') {
+                d = new Date(p.date.includes('T') ? p.date : convertRuDate(p.date));
+            } else if (typeof p.date === 'number') {
+                d = new Date(p.date);
+            }
+            if (d && !isNaN(d)) dates.add(`${d.getDate()}-${d.getMonth()}-${d.getFullYear()}`);
         } catch(e) {}
     });
     return dates;
@@ -268,8 +326,16 @@ const convertRuDate = (str) => {
 
 const getProjectDateString = (dateStr) => {
     try {
-        const d = new Date(dateStr.includes('T') ? dateStr : convertRuDate(dateStr));
-        if (isNaN(d)) return '';
+        if (!dateStr) return '';
+        let d;
+        if (typeof dateStr === 'object') {
+            d = typeof dateStr.toDate === 'function' ? dateStr.toDate() : (dateStr instanceof Date ? dateStr : null);
+        } else if (typeof dateStr === 'string') {
+            d = new Date(dateStr.includes('T') ? dateStr : convertRuDate(dateStr));
+        } else if (typeof dateStr === 'number') {
+            d = new Date(dateStr);
+        }
+        if (!d || isNaN(d)) return '';
         const day = String(d.getDate()).padStart(2, '0');
         const month = String(d.getMonth() + 1).padStart(2, '0');
         const year = d.getFullYear();
@@ -279,19 +345,43 @@ const getProjectDateString = (dateStr) => {
 
 const formatDateDisplay = (dateStr) => {
     try {
-        const d = new Date(dateStr.includes('T') ? dateStr : convertRuDate(dateStr));
-        if (isNaN(d)) return { date: 'Недавно', time: '' };
+        if (!dateStr) return { date: 'Недавно', time: '' };
+        let d;
+        if (typeof dateStr === 'object') {
+            d = typeof dateStr.toDate === 'function' ? dateStr.toDate() : (dateStr instanceof Date ? dateStr : null);
+        } else if (typeof dateStr === 'string') {
+            d = new Date(dateStr.includes('T') ? dateStr : convertRuDate(dateStr));
+        } else if (typeof dateStr === 'number') {
+            d = new Date(dateStr);
+        }
+        
+        if (!d || isNaN(d)) return { date: typeof dateStr === 'string' ? dateStr : 'Недавно', time: '' };
+        
         return {
             date: d.toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit', year: 'numeric' }),
             time: d.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })
         };
-    } catch (e) { return { date: dateStr || 'Недавно', time: '' }; }
+    } catch (e) { return { date: typeof dateStr === 'string' ? dateStr : 'Недавно', time: '' }; }
 };
 
 const parseDateSort = (dateStr) => {
     if (!dateStr) return 0;
-    const d = new Date(dateStr.includes('T') ? dateStr : convertRuDate(dateStr));
-    return d.getTime() || 0;
+    // Handle Firestore Timestamp object or plain Date object
+    if (typeof dateStr === 'object') {
+        if (typeof dateStr.toDate === 'function') return dateStr.toDate().getTime();
+        if (dateStr instanceof Date) return dateStr.getTime();
+        return 0;
+    }
+    // Handle specific string formats
+    if (typeof dateStr === 'string') {
+        const str = dateStr.trim();
+        const d = new Date(str.includes('T') ? str : convertRuDate(str));
+        return d.getTime() || 0;
+    }
+    // Handle number (unix timestamp)
+    if (typeof dateStr === 'number') return dateStr;
+    
+    return 0;
 };
 
 const goBack = () => {
@@ -355,16 +445,53 @@ const handleClickOutside = (event) => {
     }
 };
 
-const askToLoad = (project) => {
-    if (project.isPlaceholder) return;
-    impactMedium();
-    confirmModal.value = { show: true, type: 'load', item: project };
-};
-
 const askToDelete = (project, event) => {
     event.stopPropagation();
     impactMedium();
-    confirmModal.value = { show: true, type: 'delete', item: project };
+    deletingProjectId.value = project.id;
+};
+
+const cancelDelete = (event) => {
+    if(event) event.stopPropagation();
+    impactLight();
+    deletingProjectId.value = null;
+};
+
+const confirmDeleteInline = async (project, event) => {
+    if(event) event.stopPropagation();
+    impactMedium();
+    const idToDelete = project.id;
+    projects.value = projects.value.filter(p => p.id !== idToDelete);
+    deletingProjectId.value = null;
+    notificationSuccess();
+    deleteFromHistory(idToDelete).catch((e) => {
+        console.error("Ошибка удаления:", e);
+        if (notificationError) notificationError();
+        fetchHistory(); 
+    });
+};
+
+const executeBulkDelete = async () => {
+    if (selectedIds.value.size === 0) return;
+    impactMedium();
+    isBulkDeleting.value = true;
+    const idsToDelete = Array.from(selectedIds.value);
+    
+    // Optimistic UI update
+    projects.value = projects.value.filter(p => !idsToDelete.includes(p.id));
+    selectedIds.value.clear();
+    isSelectionMode.value = false;
+    notificationSuccess();
+
+    try {
+        await Promise.all(idsToDelete.map(id => deleteFromHistory(id)));
+    } catch(e) {
+        console.error("Partial bulk delete error:", e);
+        if(notificationError) notificationError();
+        fetchHistory();
+    } finally {
+        isBulkDeleting.value = false;
+    }
 };
 
 const closeConfirm = () => {
@@ -378,22 +505,38 @@ const executeAction = async () => {
     confirmModal.value.show = false;
 
     if (type === 'load') {
-        const savedTotal = Number(p?.total) || 0;
+        if ((p?.type || 'laser') === 'dtf') {
+            try {
+                sessionStorage.setItem(DTF_HISTORY_LOAD_KEY, JSON.stringify({
+                    id: p.id,
+                    qty: p?.qty || p?.state?.project?.qty || 1,
+                    state: p.state || null,
+                }));
+            } catch (error) {}
+            router.push('/calc/dtf');
+            notificationSuccess();
+            return;
+        }
+
+        const loadedQtyRaw = Number(p?.qty || p?.state?.project?.qty || 1);
+        const loadedQty = Number.isFinite(loadedQtyRaw) && loadedQtyRaw > 0 ? Math.floor(loadedQtyRaw) : 1;
+        const savedTotal = Number(p?.totalOrder ?? p?.total) || 0;
 
         if (p.state) loadState(p.state, p.id);
 
         // ⚖️ Trust but Verify: пересчитываем сумму по текущим тарифам и предупреждаем,
         // если сохранённая сумма отличается (подмена/устаревшие цены).
         await nextTick();
-        const calculatedTotal = Number(totals?.value?.total) || 0;
+        const calculatedTotalPerUnit = Number(totals?.value?.total) || 0;
+        const calculatedTotal = Math.round(calculatedTotalPerUnit * loadedQty);
         if (savedTotal > 0 && calculatedTotal > 0) {
             const diff = Math.abs(calculatedTotal - savedTotal) / savedTotal;
             if (diff > 0.01) {
                 const percent = Math.round(diff * 1000) / 10; // 0.1%
                 alert(
                     `⚠️ Предупреждение: сумма проекта отличается от пересчёта.\n\n` +
-                    `Сохранено: ${savedTotal.toLocaleString('ru-RU')} ₽\n` +
-                    `Пересчитано: ${calculatedTotal.toLocaleString('ru-RU')} ₽\n\n` +
+                    `Сохранено (за весь заказ): ${savedTotal.toLocaleString('ru-RU')} ₽\n` +
+                    `Пересчитано (за ${loadedQty} шт): ${calculatedTotal.toLocaleString('ru-RU')} ₽\n\n` +
                     `Отклонение: ~${percent}%\n\n` +
                     `Причины: изменились тарифы или данные были изменены вручную.`
                 );
@@ -402,15 +545,6 @@ const executeAction = async () => {
 
         router.push('/calc/laser');
         notificationSuccess();
-    } else if (type === 'delete') {
-        const idToDelete = p.id;
-        projects.value = projects.value.filter(project => project.id !== idToDelete);
-        notificationSuccess();
-        deleteFromHistory(idToDelete).then(() => { }).catch((e) => {
-            console.error("Ошибка удаления:", e);
-            if (notificationError) notificationError();
-            fetchHistory(); 
-        });
     }
 };
 
@@ -493,6 +627,24 @@ onUnmounted(() => {
                                 </div>
                             </Transition>
                         </div>
+                        
+                        <!-- Toggle Selection Mode -->
+                        <button 
+                            v-if="canBulkDelete && projects.length > 0"
+                            @click="toggleSelectionMode" 
+                            :class="[
+                                btnClass, 
+                                'w-14 justify-center px-0 sm:px-4 sm:w-auto overflow-hidden',
+                                isSelectionMode
+                                    ? '!bg-black !text-white dark:!bg-white dark:!text-black ring-2 ring-black dark:ring-white shadow-lg'
+                                    : ''
+                            ]"
+                        >
+                            <svg v-if="!isSelectionMode" width="20" height="20" viewBox="0 0 24 24" fill="none" class="collapse sm:visible sm:mr-2" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
+                            <svg v-else width="20" height="20" viewBox="0 0 24 24" fill="none" class="collapse sm:visible sm:mr-2" stroke="currentColor" stroke-width="2.5"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+                            <span class="font-bold text-sm hidden sm:inline">{{ isSelectionMode ? 'Отмена' : 'Выбрать' }}</span>
+                            <span class="font-bold text-sm sm:hidden absolute">{{ isSelectionMode ? '×' : '✓' }}</span>
+                        </button>
                     </div>
                 </div>
             </div>
@@ -520,13 +672,24 @@ onUnmounted(() => {
                     <Transition mode="out-in" name="grid-fade">
                         <div :key="listKey" class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4 mb-auto relative">
                             <div v-for="p in displayList" :key="p.id" 
-                                @click="askToLoad(p)"
+                                @click="isSelectionMode ? toggleSelection(p) : askToLoad(p)"
                                 class="group bg-white dark:bg-[#1C1C1E] rounded-3xl p-5 shadow-[0_10px_30px_-10px_rgba(0,0,0,0.08)] dark:shadow-black/40 relative overflow-hidden flex flex-col min-h-40 transition-all duration-300 hover:shadow-2xl hover:-translate-y-1 cursor-pointer w-full"
-                                :class="[p.isPlaceholder ? 'opacity-0 pointer-events-none shadow-none' : '']"
+                                :class="[
+                                    p.isPlaceholder ? 'opacity-0 pointer-events-none shadow-none' : '',
+                                    isSelectionMode && selectedIds.has(p.id) ? 'ring-2 ring-blue-500 scale-[0.98]' : ''
+                                ]"
                             >
                                 <template v-if="!p.isPlaceholder">
                                     <div class="absolute -bottom-6 -right-6 text-gray-50 dark:text-[#252525] group-hover:text-gray-100 dark:group-hover:text-[#2A2A2A] transition-all duration-500 group-hover:scale-110 group-hover:-rotate-12 pointer-events-none"><svg width="130" height="130" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z" /></svg></div>
-                                    <button @click.stop="askToDelete(p, $event)" class="absolute top-3 right-3 p-2 bg-white/80 dark:bg-black/50 backdrop-blur-sm rounded-full text-gray-300 dark:text-gray-600 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 transition-all opacity-0 group-hover:opacity-100 z-20 scale-90 hover:scale-100 shadow-sm border border-gray-100 dark:border-white/5"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg></button>
+                                    
+                                    <div v-if="isSelectionMode" class="absolute top-3 right-3 z-30 transition-transform" :class="selectedIds.has(p.id) ? 'scale-110' : 'scale-100'">
+                                        <div class="w-[34px] h-[34px] rounded-full border-2 flex items-center justify-center transition-colors shadow-sm"
+                                             :class="selectedIds.has(p.id) ? 'bg-blue-500 border-blue-500 shadow-lg shadow-blue-500/30' : 'border-gray-300 dark:border-gray-500 bg-white/80 dark:bg-black/50 backdrop-blur-sm'">
+                                            <svg v-if="selectedIds.has(p.id)" class="w-4 h-4 text-white" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>
+                                        </div>
+                                    </div>
+                                    <button v-else @click.stop="askToDelete(p, $event)" class="absolute top-3 right-3 p-2 bg-white/80 dark:bg-black/50 backdrop-blur-sm rounded-full text-gray-300 dark:text-gray-600 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 transition-all opacity-0 group-hover:opacity-100 z-20 scale-90 hover:scale-100 shadow-sm border border-gray-100 dark:border-white/5"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg></button>
+
                                     <div class="relative z-10 mb-3"><div class="inline-flex items-center gap-1.5 px-2 py-1 bg-gray-100/80 dark:bg-white/10 backdrop-blur-md rounded-lg border border-gray-200/50 dark:border-white/5 w-fit"><svg class="w-3 h-3 text-gray-500 dark:text-gray-400" viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="M13 10V3L4 14h7v7l9-11h-7z" /></svg><span class="text-[9px] font-black text-gray-700 dark:text-gray-300 uppercase tracking-wider">{{ (calcTypes.find(t => t.id === (p.type || 'laser')) || calcTypes[1]).label }}</span></div></div>
                                     <div class="relative z-10 flex-1 flex flex-col items-start pr-6 gap-1">
                                         <h3 class="text-sm md:text-base font-black text-[#1d1d1f] dark:text-white leading-snug break-words">{{ p.name }}</h3>
@@ -534,6 +697,21 @@ onUnmounted(() => {
                                     </div>
                                     <div class="flex flex-col relative z-10 mt-3 mb-2"><span class="text-xs font-bold text-gray-500 dark:text-gray-400 uppercase tracking-wide leading-none">{{ formatDateDisplay(p.date).date }}</span><span class="text-[9px] font-bold text-gray-300 dark:text-gray-600 leading-tight mt-0.5">{{ formatDateDisplay(p.date).time }}</span></div>
                                     <div class="relative z-10 flex items-end justify-between pt-2 border-t border-gray-50/50 dark:border-white/5"><div class="flex flex-col"><div class="flex items-baseline gap-0.5"><span class="text-lg md:text-xl font-black text-black dark:text-white tracking-tight leading-none">{{ parseInt(p.total).toLocaleString() }}</span><span class="text-[10px] font-bold text-gray-400">₽</span></div></div><div class="pl-3 pr-2 py-1.5 bg-[#1d1d1f] dark:bg-white group-hover:bg-black dark:group-hover:bg-gray-200 rounded-full text-white dark:text-black flex items-center gap-1 transition-colors"><span class="text-[9px] font-bold uppercase tracking-widest">Открыть</span><svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M5 12h14M12 5l7 7-7 7"/></svg></div></div>
+                                    
+                                    <!-- Inline Delete Overlay -->
+                                    <Transition enter-active-class="transition-[opacity,transform] duration-300 ease-out" enter-from-class="opacity-0 scale-95" enter-to-class="opacity-100 scale-100" leave-active-class="transition-[opacity,transform] duration-200 ease-in" leave-from-class="opacity-100 scale-100" leave-to-class="opacity-0 scale-95">
+                                        <div v-if="deletingProjectId === p.id" class="absolute inset-0 z-50 bg-red-500/90 dark:bg-red-900/90 backdrop-blur-md flex flex-col items-center justify-center p-4 rounded-3xl" @click.stop>
+                                            <div class="bg-white dark:bg-[#1C1C1E] p-5 rounded-2xl w-full flex flex-col items-center text-center shadow-xl transform transition-all pb-4">
+                                                <div class="w-10 h-10 bg-red-50 dark:bg-red-900/20 rounded-full flex items-center justify-center mb-3 text-red-500"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg></div>
+                                                <p class="font-black text-sm text-gray-900 dark:text-white mb-4">Удалить проект?</p>
+                                                <div class="flex w-full gap-2 mt-auto">
+                                                    <button @click="cancelDelete" class="flex-1 py-3 rounded-xl font-bold text-[10px] uppercase tracking-widest bg-gray-100 dark:bg-white/5 text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-white/10 transition-colors">Отмена</button>
+                                                    <button @click="confirmDeleteInline(p, $event)" class="flex-1 py-3 rounded-xl font-bold text-[10px] uppercase tracking-widest bg-red-500 text-white hover:bg-red-600 shadow-lg shadow-red-500/20 transition-colors">Удалить</button>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </Transition>
+
                                 </template>
                             </div>
                         </div>
@@ -558,15 +736,41 @@ onUnmounted(() => {
                     </div>
 
                     <div class="mt-8 text-center opacity-40 hover:opacity-100 transition-opacity">
-                        <p class="text-[9px] text-gray-500 dark:text-gray-400 font-bold uppercase tracking-[0.2em]">Хранение данных: 30 дней</p>
+                        <p class="text-[9px] text-gray-500 dark:text-gray-400 font-bold uppercase tracking-widest">Хранение данных: 30 дней</p>
                     </div>
                 </div>
             </PageScrollWrapper>
 
+            <!-- Плавающая панель массового удаления -->
+            <Transition name="grid-fade">
+                <div v-if="isSelectionMode" class="absolute bottom-6 left-1/2 -translate-x-1/2 z-50">
+                    <div class="bg-white/90 dark:bg-[#1C1C1E]/90 backdrop-blur-xl px-5 py-3 rounded-full shadow-[0_10px_40px_-10px_rgba(0,0,0,0.3)] border border-gray-200/50 dark:border-white/10 flex items-center gap-4">
+                        <span class="font-bold text-sm text-gray-800 dark:text-white whitespace-nowrap">Выбрано: {{ selectedIds.size }}</span>
+                        
+                        <div class="w-px h-6 bg-gray-200 dark:bg-white/10"></div>
+                        
+                        <div class="flex items-center gap-2">
+                            <button @click="selectAllCurrent" class="text-xs font-bold text-gray-500 hover:text-black dark:text-gray-400 dark:hover:text-white px-3 py-2 rounded-full hover:bg-gray-100 dark:hover:bg-white/10 transition-colors uppercase">Все</button>
+                            <button @click="clearSelection" class="text-xs font-bold text-gray-500 hover:text-black dark:text-gray-400 dark:hover:text-white px-3 py-2 rounded-full hover:bg-gray-100 dark:hover:bg-white/10 transition-colors uppercase">Снять</button>
+                            
+                            <button 
+                                @click="executeBulkDelete" 
+                                :disabled="selectedIds.size === 0 || isBulkDeleting"
+                                class="ml-2 bg-red-500 hover:bg-red-600 disabled:bg-gray-300 dark:disabled:bg-gray-800 text-white px-5 py-2.5 rounded-full font-bold text-xs uppercase tracking-wider transition-all disabled:scale-100 disabled:opacity-50 hover:scale-105 active:scale-95 shadow-lg shadow-red-500/30 disabled:shadow-none flex items-center gap-2"
+                            >
+                                <svg v-if="isBulkDeleting" class="w-4 h-4 animate-spin" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><circle cx="12" cy="12" r="10" stroke-opacity="0.25"></circle><path d="M12 2a10 10 0 0 1 10 10" stroke-linecap="round"></path></svg>
+                                <svg v-else width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
+                                <span>Удалить</span>
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </Transition>
+
             <Teleport to="body">
                 <Transition name="modal-pop">
                     <div v-if="confirmModal.show" class="fixed inset-0 z-[9999] flex items-center justify-center bg-black/60 backdrop-blur-sm p-4" @click.self="closeConfirm">
-                        <div class="bg-white dark:bg-[#1C1C1E] rounded-2xl shadow-2xl p-6 max-w-sm w-full border border-white/50 dark:border-white/5 text-center transform transition-all">
+                        <div class="bg-white dark:bg-[#1C1C1E] rounded-[2rem] shadow-2xl p-6 max-w-sm w-full border border-gray-100 dark:border-white/10 text-center transform transition-all">
                             <h3 class="text-lg font-black mb-2 text-gray-900 dark:text-white">{{ modalContent.title }}</h3>
                             <p class="text-sm text-gray-500 dark:text-gray-400 mb-6 leading-relaxed">{{ modalContent.text }}</p>
                             <div class="grid grid-cols-2 gap-3">

@@ -1,6 +1,11 @@
 import { initializeApp } from "firebase/app";
 import { getAnalytics } from "firebase/analytics";
-import { getFirestore } from "firebase/firestore";
+import {
+  getFirestore,
+  initializeFirestore,
+  persistentLocalCache,
+  persistentSingleTabManager,
+} from "firebase/firestore";
 import { getAuth, setPersistence, browserLocalPersistence } from "firebase/auth";
 
 /**
@@ -78,21 +83,35 @@ assertAllowedHost();
 
 const app = initializeApp(firebaseConfig);
 
-// Analytics can throw in non-browser contexts; guard to keep app stable
-try {
-  getAnalytics(app);
-} catch {
-  // ignore
+// Analytics only in production — not needed in dev/offline PWA
+if (import.meta.env.PROD) {
+  try {
+    getAnalytics(app);
+  } catch {
+    // ignore: can throw in non-browser or restricted contexts
+  }
 }
 
-export const db = getFirestore(app);
+let dbInstance;
+try {
+  dbInstance = initializeFirestore(app, {
+    localCache: persistentLocalCache({
+      tabManager: persistentSingleTabManager(),
+    }),
+  });
+} catch (e) {
+  dbInstance = getFirestore(app);
+  console.warn("[Firebase] Firestore persistent cache unavailable, fallback to default:", e?.message || e);
+}
+
+export const db = dbInstance;
 export const auth = getAuth(app);
 
 // --- ВАЖНО: ВКЛЮЧАЕМ СОХРАНЕНИЕ СЕССИИ ---
 // Это гарантирует, что при обновлении страницы (F5) авторизация не слетит
 setPersistence(auth, browserLocalPersistence)
   .then(() => {
-    console.log("Firebase persistence enabled");
+    if (import.meta.env.DEV) console.log("Firebase persistence enabled");
   })
   .catch((error) => {
     console.error("Firebase persistence error:", error);

@@ -14,4 +14,5 @@ export const defaultSettings = {
     laserMinuteCost: 0,
     engravingPrice: 0,
     engravingCost100x100mm: 0,
+    minimumOrderPrice: 0,
 };

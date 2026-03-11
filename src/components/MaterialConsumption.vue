@@ -17,8 +17,10 @@ defineProps({
                     <span class="font-bold text-xs text-[#18181B] dark:text-gray-100 truncate pr-2">{{ item.name }}</span>
                     <div class="text-right shrink-0">
                         <template v-if="item.isValid">
-                            <span class="font-black text-sm text-[#18181B] dark:text-white">{{ item.sheets }}</span>
-                            <span class="text-[10px] text-gray-400 dark:text-gray-500 font-bold uppercase ml-1">лист(а)</span>
+                            <div>
+                                <span class="font-black text-sm text-[#18181B] dark:text-white">{{ item.sheets }}</span>
+                                <span class="text-[10px] text-gray-400 dark:text-gray-500 font-bold uppercase ml-1">лист(а)</span>
+                            </div>
                         </template>
                         <template v-else>
                             <span class="text-[9px] font-bold text-red-400 uppercase">Нет размеров</span>

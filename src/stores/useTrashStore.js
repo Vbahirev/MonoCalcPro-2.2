@@ -1,10 +1,20 @@
-
 import { ref, computed } from 'vue'
-import { useDatabase } from '@/composables/useDatabase'
+import {
+  collection,
+  query,
+  orderBy,
+  where,
+  limit,
+  getDocs,
+  deleteDoc,
+  writeBatch,
+  Timestamp,
+  doc,
+} from 'firebase/firestore'
+import { db } from '@/firebase'
+import { canUser } from '@/core/auth/access'
 
 export function useTrashStore(uid) {
-  const { db } = useDatabase()
-
   const items = ref([])
   const filter = ref('all')
   const error = ref(null)
@@ -12,13 +22,11 @@ export function useTrashStore(uid) {
   async function load() {
     try {
       if (!uid) return
-      const snap = await db
-        .collection('users')
-        .doc(uid)
-        .collection('trash')
-        .orderBy('deletedAt', 'desc')
-        .get()
-
+      const q = query(
+        collection(db, 'users', uid, 'trash'),
+        orderBy('deletedAt', 'desc')
+      )
+      const snap = await getDocs(q)
       items.value = snap.docs
         .map(d => ({ id: d.id, ...d.data() }))
         .filter(i => i && i.id)
@@ -34,47 +42,36 @@ export function useTrashStore(uid) {
 
   async function purge(id) {
     if (!uid || !id) return
-    await db
-      .collection('users')
-      .doc(uid)
-      .collection('trash')
-      .doc(id)
-      .delete()
+    await deleteDoc(doc(db, 'users', uid, 'trash', id))
     await load()
   }
 
   return { items, filtered, filter, load, purge, error }
 }
 
+// Очистка просроченных записей корзины (вызывать серверно или из admin-панели)
+export async function purgeExpiredTrash(user, uid) {
+  if (!canUser(user, 'trash.purge')) return
 
-// === STEP 7: purgeExpiredTrash (no TTL) ===
-import { query, where, orderBy, limit, getDocs, writeBatch, Timestamp } from 'firebase/firestore';
-import { useAuthStore } from './useAuthStore';
-import { can } from '@/core/auth/permissions';
-
-export async function purgeExpiredTrash(db, uid) {
-  const auth = useAuthStore();
-  if (!can(auth.user, 'trash.purge')) return;
-
-  const now = Timestamp.now();
-  let hasMore = true;
+  const now = Timestamp.now()
+  let hasMore = true
 
   while (hasMore) {
     const q = query(
-      collection(db, `users/${uid}/trash`),
+      collection(db, 'users', uid, 'trash'),
       where('expiresAt', '<=', now),
       orderBy('expiresAt'),
       limit(100)
-    );
+    )
 
-    const snap = await getDocs(q);
+    const snap = await getDocs(q)
     if (snap.empty) {
-      hasMore = false;
-      break;
+      hasMore = false
+      break
     }
 
-    const batch = writeBatch(db);
-    snap.docs.forEach(d => batch.delete(d.ref));
-    await batch.commit();
+    const batch = writeBatch(db)
+    snap.docs.forEach(d => batch.delete(d.ref))
+    await batch.commit()
   }
 }

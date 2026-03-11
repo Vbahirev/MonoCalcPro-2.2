@@ -633,19 +633,19 @@ onMounted(loadTrash)
 
           <!-- DEFAULT BROWSE: grouped -->
           <div v-else-if="isDefaultBrowseMode" class="space-y-3">
-            <div v-for="(list, key) in groupedItems" :key="key" class="rounded-3xl bg-white/70 dark:bg-white/5 border border-black/5 dark:border-white/10 overflow-hidden">
+            <div v-for="(list, key) in groupedItems" :key="key" class="rounded-3xl bg-white dark:bg-[#1C1C1E] border border-gray-100 dark:border-white/10 overflow-hidden shadow-sm">
               <button
-                class="w-full px-5 py-4 flex items-center gap-3 text-left"
+                class="w-full px-5 py-4 flex items-center gap-3 text-left hover:bg-gray-50 dark:hover:bg-white/5 transition-colors"
                 @click="openedGroups[key] = !openedGroups[key]"
               >
-                <div class="font-black text-[#1d1d1f] dark:text-white text-lg flex-1">
+                <div class="font-black text-[#1d1d1f] dark:text-white text-base flex-1">
                   {{ typeLabels[key] || 'Другое' }}
                 </div>
-                <div class="text-xs font-extrabold px-3 py-1 rounded-full bg-black/5 dark:bg-white/10">
+                <div class="text-[10px] font-black px-2.5 py-1 rounded-full bg-black/5 dark:bg-white/10 text-gray-600 dark:text-gray-300">
                   {{ list.length }}
                 </div>
-                <div class="opacity-70 font-black">
-                  {{ openedGroups[key] ? '▾' : '▸' }}
+                <div class="text-gray-400 transition-transform duration-200" :class="openedGroups[key] ? 'rotate-180' : ''">
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"/></svg>
                 </div>
               </button>
 
@@ -659,21 +659,22 @@ onMounted(loadTrash)
                   <div class="flex items-start justify-between gap-4">
                     <div class="flex flex-col gap-2 min-w-0">
                       <div class="flex items-center justify-between gap-3">
-                        <span class="px-3 py-1 rounded-xl text-[11px] font-extrabold tracking-widest uppercase
-                                     bg-black/5 dark:bg-white/10 text-gray-600 dark:text-gray-200">
+                        <span class="px-2.5 py-1 rounded-lg text-[10px] font-black tracking-widest uppercase bg-black/5 dark:bg-white/10 text-gray-600 dark:text-gray-300">
                           {{ itemTypeLabel(item) }}
                         </span>
-                        <span class="text-xs font-extrabold text-gray-500 dark:text-gray-400 whitespace-nowrap">
-                          ⏳ Осталось {{ daysLeft(item) }} дн.
+                        <span class="inline-flex items-center gap-1.5 text-[11px] font-bold text-gray-500 dark:text-gray-400 whitespace-nowrap">
+                          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+                          {{ daysLeft(item) }} дн.
                         </span>
                       </div>
 
-                      <div class="text-lg font-black text-[#1d1d1f] dark:text-white truncate">
+                      <div class="text-base font-black text-[#1d1d1f] dark:text-white truncate">
                         {{ itemTitle(item) }}
                       </div>
 
-                      <div class="text-xs text-gray-500 dark:text-gray-400 font-semibold">
-                        🗓 Удалено: {{ formatDeletedAt(item) }}
+                      <div class="inline-flex items-center gap-1.5 text-[11px] text-gray-400 dark:text-gray-500 font-semibold">
+                        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
+                        {{ formatDeletedAt(item) }}
                       </div>
 
                       <div class="text-xs text-gray-500 dark:text-gray-400 font-semibold opacity-90">
@@ -694,11 +695,9 @@ onMounted(loadTrash)
                     </div>
                   </div>
 
-                  <details class="mt-4">
-                    <summary class="cursor-pointer font-bold text-sm text-gray-600 dark:text-gray-300">
-                      Технические детали
-                    </summary>
-                    <pre class="mt-3 text-xs bg-black/5 dark:bg-white/5 rounded-2xl p-4 max-h-64 overflow-auto">{{ prettyJson(item) }}</pre>
+                  <details class="mt-3 details-block">
+                    <summary class="details-summary">Технические детали</summary>
+                    <pre class="details-pre">{{ prettyJson(item) }}</pre>
                   </details>
                 </div>
               </div>
@@ -719,21 +718,22 @@ onMounted(loadTrash)
               <div class="flex items-start justify-between gap-4">
                 <div class="flex flex-col gap-2 min-w-0">
                   <div class="flex items-center justify-between gap-3">
-                    <span class="px-3 py-1 rounded-xl text-[11px] font-extrabold tracking-widest uppercase
-                                 bg-black/5 dark:bg-white/10 text-gray-600 dark:text-gray-200">
+                    <span class="px-2.5 py-1 rounded-lg text-[10px] font-black tracking-widest uppercase bg-black/5 dark:bg-white/10 text-gray-600 dark:text-gray-300">
                       {{ itemTypeLabel(item) }}
                     </span>
-                    <span class="text-xs font-extrabold text-gray-500 dark:text-gray-400 whitespace-nowrap">
-                      ⏳ Осталось {{ daysLeft(item) }} дн.
+                    <span class="inline-flex items-center gap-1.5 text-[11px] font-bold text-gray-500 dark:text-gray-400 whitespace-nowrap">
+                      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+                      {{ daysLeft(item) }} дн.
                     </span>
                   </div>
 
-                  <div class="text-lg font-black text-[#1d1d1f] dark:text-white truncate">
+                  <div class="text-base font-black text-[#1d1d1f] dark:text-white truncate">
                     {{ itemTitle(item) }}
                   </div>
 
-                  <div class="text-xs text-gray-500 dark:text-gray-400 font-semibold">
-                    🗓 Удалено: {{ formatDeletedAt(item) }}
+                  <div class="inline-flex items-center gap-1.5 text-[11px] text-gray-400 dark:text-gray-500 font-semibold">
+                    <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
+                    {{ formatDeletedAt(item) }}
                   </div>
 
                   <div class="text-xs text-gray-500 dark:text-gray-400 font-semibold opacity-90">
@@ -750,11 +750,9 @@ onMounted(loadTrash)
 
               <div class="h-px w-full bg-black/5 dark:bg-white/10 my-4"></div>
 
-              <details>
-                <summary class="cursor-pointer font-extrabold text-sm text-gray-600 dark:text-gray-300">
-                  Технические детали
-                </summary>
-                <pre class="mt-3 text-xs bg-black/5 dark:bg-white/5 rounded-2xl p-4 max-h-64 overflow-auto">{{ prettyJson(item) }}</pre>
+              <details class="mt-1 details-block">
+                <summary class="details-summary">Технические детали</summary>
+                <pre class="details-pre">{{ prettyJson(item) }}</pre>
               </details>
 
               <button :class="actionBtnClass + ' absolute right-5 bottom-5'" @click="restoreItem(item)">
@@ -769,60 +767,60 @@ onMounted(loadTrash)
     </PageScrollWrapper>
 
     <!-- TOAST -->
-    <div v-if="toast" class="fixed top-4 left-1/2 -translate-x-1/2 z-[9999]">
-      <div
-        class="px-5 py-3 rounded-full font-extrabold text-xs uppercase tracking-widest shadow-2xl border border-white/10"
-        :class="toast.type === 'danger'
-          ? 'bg-[#ff3b30] text-white'
-          : toast.type === 'ok'
-            ? 'bg-[#34c759] text-black'
-            : 'bg-white text-black'"
-      >
-        {{ toast.message }}
+<div v-if="toast" class="fixed bottom-6 left-1/2 -translate-x-1/2 z-[9999]">
+        <div
+          class="px-5 py-3 rounded-2xl font-bold text-sm shadow-2xl"
+          :class="toast.type === 'danger'
+            ? 'bg-red-500 text-white'
+            : toast.type === 'ok'
+              ? 'bg-green-500 text-white'
+              : 'bg-white dark:bg-[#1C1C1E] text-black dark:text-white border border-gray-100 dark:border-white/10'"
+        >
+          {{ toast.message }}
+        </div>
       </div>
-    </div>
 
     <!-- CONFIRM MODAL -->
-    <div v-if="modal.open" class="fixed inset-0 z-[9998] bg-black/60 backdrop-blur-sm flex items-center justify-center p-5" @click.self="closeModal">
-      <div class="w-full max-w-md rounded-3xl bg-white dark:bg-[#1C1C1E] p-5 shadow-2xl border border-black/10 dark:border-white/10">
-        <div class="text-xl font-black text-[#1d1d1f] dark:text-white">
+    <div v-if="modal.open" class="fixed inset-0 z-[9998] bg-black/40 backdrop-blur-sm flex items-center justify-center p-5" @click.self="closeModal">
+      <div class="w-full max-w-sm rounded-[2rem] bg-white dark:bg-[#1C1C1E] p-6 shadow-2xl border border-gray-100 dark:border-white/10">
+        <h3 class="text-xl font-black text-[#1d1d1f] dark:text-white mb-2">
           {{ modal.title }}
-        </div>
-        <div class="mt-2 text-sm text-gray-600 dark:text-gray-300 font-semibold">
+        </h3>
+        <p class="text-sm text-gray-500 dark:text-gray-400 font-medium leading-relaxed">
           {{ modal.text }}
-        </div>
+        </p>
 
-        <div v-if="modal.details?.length" class="mt-4 rounded-2xl bg-black/5 dark:bg-white/5 p-4">
-          <div v-for="d in modal.details" :key="d" class="text-xs font-bold text-gray-700 dark:text-gray-200">
+        <div v-if="modal.details?.length" class="mt-4 rounded-2xl bg-gray-50 dark:bg-white/5 p-4 space-y-1.5">
+          <div v-for="d in modal.details" :key="d" class="text-xs font-bold text-gray-600 dark:text-gray-300">
             {{ d }}
           </div>
         </div>
 
-        <div class="mt-5 flex justify-end gap-2">
-          <button :class="actionBtnClass" @click="closeModal">ОТМЕНА</button>
+        <p v-if="modal.locked" class="mt-3 text-[11px] text-gray-400 font-semibold">
+          Подтверждение станет доступно через секунду…
+        </p>
+
+        <div class="mt-6 flex gap-3">
+          <button class="flex-1 h-12 rounded-xl bg-gray-100 dark:bg-white/5 text-gray-600 dark:text-gray-300 font-bold text-sm hover:bg-gray-200 dark:hover:bg-white/10 transition-colors" @click="closeModal">Отмена</button>
           <button
-            :class="actionBtnClass"
+            class="flex-1 h-12 rounded-xl bg-[#1d1d1f] dark:bg-white text-white dark:text-black font-bold text-sm shadow-lg hover:scale-[1.02] active:scale-95 transition-all disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:scale-100"
             :disabled="modal.locked"
             @click="confirmModal"
           >
             {{ modal.confirmText }}
           </button>
         </div>
-
-        <div v-if="modal.locked" class="mt-3 text-xs text-gray-500 dark:text-gray-400 font-semibold">
-          Подтверждение станет доступно через секунду…
-        </div>
       </div>
     </div>
     <!-- DESTINATION MODAL (Modal #2) -->
-    <div v-if="destModal.open" class="fixed inset-0 z-[9998] bg-black/60 backdrop-blur-sm flex items-center justify-center p-5" @click.self="closeDestModal">
-      <div class="w-full max-w-md rounded-3xl bg-white dark:bg-[#1C1C1E] p-5 shadow-2xl border border-black/10 dark:border-white/10">
-        <div class="text-xl font-black text-[#1d1d1f] dark:text-white">
+    <div v-if="destModal.open" class="fixed inset-0 z-[9998] bg-black/40 backdrop-blur-sm flex items-center justify-center p-5" @click.self="closeDestModal">
+      <div class="w-full max-w-sm rounded-[2rem] bg-white dark:bg-[#1C1C1E] p-6 shadow-2xl border border-gray-100 dark:border-white/10">
+        <h3 class="text-xl font-black text-[#1d1d1f] dark:text-white mb-2">
           {{ destModal.title }}
-        </div>
-        <div class="mt-2 text-sm text-gray-600 dark:text-gray-300 font-semibold">
+        </h3>
+        <p class="text-sm text-gray-500 dark:text-gray-400 font-medium leading-relaxed">
           {{ destModal.text }}
-        </div>
+        </p>
 
         <div class="mt-4">
           <ModernSelect
@@ -833,10 +831,10 @@ onMounted(loadTrash)
           />
         </div>
 
-        <div class="mt-5 flex justify-end gap-2">
-          <button :class="actionBtnClass" @click="closeDestModal">НАЗАД</button>
+        <div class="mt-6 flex gap-3">
+          <button class="flex-1 h-12 rounded-xl bg-gray-100 dark:bg-white/5 text-gray-600 dark:text-gray-300 font-bold text-sm hover:bg-gray-200 dark:hover:bg-white/10 transition-colors" @click="closeDestModal">Назад</button>
           <button
-            :class="actionBtnClass"
+            class="flex-1 h-12 rounded-xl bg-[#1d1d1f] dark:bg-white text-white dark:text-black font-bold text-sm shadow-lg hover:scale-[1.02] active:scale-95 transition-all disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:scale-100"
             :disabled="!destModal.selected || destModal.locked"
             @click="(async () => { 
               try { 
@@ -849,7 +847,7 @@ onMounted(loadTrash)
               } 
             })()"
           >
-            ВОССТАНОВИТЬ
+            Восстановить
           </button>
         </div>
       </div>
@@ -858,3 +856,52 @@ onMounted(loadTrash)
 
   </div>
 </template>
+
+<style scoped>
+/* ─── TTL Status Indicator — colored left accent via inset box-shadow ──────── */
+.safe    { box-shadow: inset 4px 0 0 0 #4ade80, 0 10px 30px -15px rgba(0,0,0,0.25); }
+.warning { box-shadow: inset 4px 0 0 0 #facc15, 0 10px 30px -15px rgba(0,0,0,0.25); }
+.urgent  { box-shadow: inset 4px 0 0 0 #fb923c, 0 10px 30px -15px rgba(0,0,0,0.25); }
+.danger  { box-shadow: inset 4px 0 0 0 #f87171, 0 10px 30px -15px rgba(0,0,0,0.25); }
+
+/* ─── Details / Summary — tech details block ──────────────────────────────── */
+.details-block { margin-top: 0.5rem; }
+
+.details-summary {
+  list-style: none;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+  padding: 0.375rem 0.75rem;
+  border-radius: 0.625rem;
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #9ca3af;
+  background: rgba(0, 0, 0, 0.04);
+  transition: background 0.15s, color 0.15s;
+  user-select: none;
+}
+.details-summary::-webkit-details-marker { display: none; }
+.details-summary::marker { display: none; }
+.details-summary:hover { background: rgba(0, 0, 0, 0.08); color: #6b7280; }
+
+:global(.dark) .details-summary { background: rgba(255, 255, 255, 0.05); color: #6b7280; }
+:global(.dark) .details-summary:hover { background: rgba(255, 255, 255, 0.09); color: #9ca3af; }
+
+.details-pre {
+  margin-top: 0.5rem;
+  padding: 0.75rem 1rem;
+  border-radius: 0.75rem;
+  font-family: ui-monospace, 'Cascadia Code', 'JetBrains Mono', monospace;
+  font-size: 0.675rem;
+  line-height: 1.6;
+  max-height: 14rem;
+  overflow: auto;
+  background: rgba(0, 0, 0, 0.04);
+  color: #374151;
+}
+:global(.dark) .details-pre { background: rgba(255, 255, 255, 0.05); color: #d1d5db; }
+</style>
