@@ -3,19 +3,30 @@ import { ref, computed, watch } from 'vue';
 // --- ГЛОБАЛЬНОЕ СОСТОЯНИЕ ---
 // Храним состояние вне функции, чтобы оно было единым для всего приложения
 const THEME_KEY = 'monocalc-theme-preference'; // Ключ для памяти браузера
-const theme = ref(localStorage.getItem(THEME_KEY) || 'system'); // Читаем из памяти или ставим system
+const safeReadTheme = () => {
+    try {
+        return localStorage.getItem(THEME_KEY) || 'system';
+    } catch {
+        return 'system';
+    }
+};
+const theme = ref(safeReadTheme()); // Читаем из памяти или ставим system
 
 // Следим за системной темой в реальном времени
-const mediaQuery = window.matchMedia('(prefers-color-scheme: dark)');
-const systemIsDark = ref(mediaQuery.matches);
+const mediaQuery = typeof window !== 'undefined' && typeof window.matchMedia === 'function'
+    ? window.matchMedia('(prefers-color-scheme: dark)')
+    : null;
+const systemIsDark = ref(Boolean(mediaQuery?.matches));
 
 // Слушатель изменений системы (если ты поменял тему в Windows/iOS, не перезагружая сайт)
-mediaQuery.addEventListener('change', (e) => {
-    systemIsDark.value = e.matches;
-    if (theme.value === 'system') {
-        applyTheme();
-    }
-});
+if (mediaQuery?.addEventListener) {
+    mediaQuery.addEventListener('change', (e) => {
+        systemIsDark.value = e.matches;
+        if (theme.value === 'system') {
+            applyTheme();
+        }
+    });
+}
 
 // --- ФУНКЦИЯ ПРИМЕНЕНИЯ ТЕМЫ К HTML ---
 const applyTheme = () => {
@@ -36,7 +47,9 @@ export function useTheme() {
     // Функция установки темы (вызывается кнопками)
     const setTheme = (newTheme) => {
         theme.value = newTheme;
-        localStorage.setItem(THEME_KEY, newTheme); // <-- СОХРАНЯЕМ В ПАМЯТЬ
+        try {
+            localStorage.setItem(THEME_KEY, newTheme); // <-- СОХРАНЯЕМ В ПАМЯТЬ
+        } catch {}
         applyTheme();
     };
 

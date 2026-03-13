@@ -80,6 +80,14 @@ const applyMarkup = (value, markupPercent) => {
 // Это позволяет подключать много калькуляторов (или несколько инстансов одного)
 // без взаимного влияния. Логика расчётов при этом остаётся 1:1.
 function createState() {
+    const readAutoSaveCounter = () => {
+        try {
+            return parseInt(localStorage.getItem('monocalc_autosave_counter'), 10) || 1;
+        } catch (e) {
+            return 1;
+        }
+    };
+
     return {
         project: ref({ name: '', client: '', discount: 0, markup: 0 }),
         layers: ref([]),
@@ -89,7 +97,7 @@ function createState() {
         design: ref([]),
         toast: ref({ show: false, message: '', actionLabel: '', onAction: null }),
         currentProjectId: ref(null),
-        autoSaveCounter: ref(parseInt(localStorage.getItem('monocalc_autosave_counter')) || 1),
+        autoSaveCounter: ref(readAutoSaveCounter()),
     };
 }
 
@@ -804,6 +812,37 @@ const deleteFromTrashForever = async (id) => {
         };
     });
 
+    const hasAnyOutputData = computed(() => {
+        const hasValidLayer = layers.value.some((layer) => {
+            if (!layer?.matId) return false;
+
+            const width = positive(toNum(layer?.w, 0));
+            const height = positive(toNum(layer?.h, 0));
+            const area = positive(toNum(layer?.area, 0));
+            const cutLength = nonNeg(toNum(layer?.cut, 0));
+            const engravingArea = positive(toNum(layer?.engravingArea, 0));
+            const engravingWidth = positive(toNum(layer?.engravingW_mm, 0));
+            const engravingHeight = positive(toNum(layer?.engravingH_mm, 0));
+
+            return area > 0
+                || (width > 0 && height > 0)
+                || cutLength > 0
+                || engravingArea > 0
+                || (engravingWidth > 0 && engravingHeight > 0);
+        });
+
+        if (hasValidLayer) return true;
+
+        return nonNeg(toNum(totals.value?.costTotal, 0)) > 0;
+    });
+
+    const validateProjectBeforeOutput = () => {
+        if (hasAnyOutputData.value) return true;
+
+        showToast('Нельзя сформировать КП: добавьте данные для расчёта.');
+        return false;
+    };
+
     return {
         materials, materialGroups, coatings, 
         processingDB, accessoriesDB, packagingDB, designDB, settings, 
@@ -828,6 +867,7 @@ const deleteFromTrashForever = async (id) => {
 
         deleteFromHistory,
         triggerAutoSave,
+        validateProjectBeforeOutput,
         showToast,
         runToastAction
     };

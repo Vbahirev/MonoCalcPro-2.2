@@ -1,10 +1,18 @@
 <script setup>
-import { computed, ref, watch } from 'vue';
+import { computed, onUnmounted, ref, watch } from 'vue';
 import { useDatabase } from '@/composables/useDatabase';
 import { isCoatingAllowedForMaterial } from '@/utils/coatingCompatibility';
 import { COATING_PRICING_MODE_DTF_LINEAR, getCoatingPricePerCm2 } from '@/utils/coatingPricing';
 
 const INVOICE_PRINT_PREFS_KEY = 'monocalc_invoice_print_prefs_v1';
+const INVOICE_MANAGER_NAME_KEY = 'monocalc_invoice_manager_name_v1';
+const STAMP_BASE_WIDTH = 140;
+const SIGNATURE_BASE_WIDTH = 150;
+const STAMP_SCALE_LIMITS = { min: 0.3, max: 2.5 };
+const SIGNATURE_SCALE_LIMITS = { min: 0.5, max: 2 };
+const ASSET_OFFSET_LIMIT = 260;
+const SYSTEM_STAMP_URL = `${import.meta.env.BASE_URL}stamp.png`;
+const SYSTEM_SIGNATURE_URL = `${import.meta.env.BASE_URL}signature.png`;
 
 const props = defineProps({
     show: Boolean,
@@ -48,111 +56,218 @@ const currentDate = new Date().toLocaleDateString('ru-RU');
 const invoiceNumber = ref(1932);
 const managerName = ref('');
 const stampEnabled = ref(true);
-const stampImageDataUrl = ref('');
+const stampImageDataUrl = ref(SYSTEM_STAMP_URL);
 const stampOffsetX = ref(0);
 const stampOffsetY = ref(0);
 const stampScale = ref(1);
 const signatureEnabled = ref(false);
-const signatureImageDataUrl = ref('');
+const signatureImageDataUrl = ref(SYSTEM_SIGNATURE_URL);
 const signatureOffsetX = ref(0);
 const signatureOffsetY = ref(0);
 const signatureScale = ref(1);
+const assetFrontLayer = ref('signature');
+const selectedAsset = ref(null);
 const prefsExpanded = ref(false);
-const stampControlsExpanded = ref(false);
-const signatureControlsExpanded = ref(false);
-const { userRole, hasPermission, processingDB, accessoriesDB, packagingDB, designDB } = useDatabase();
-const canManageInvoiceAssets = computed(() => {
-    const role = String(userRole.value || '').toLowerCase();
-    if (role === 'superadmin') return true;
-    return hasPermission('invoice.stamp.edit');
-});
+const activeAssetInteraction = ref(null);
+const { processingDB, accessoriesDB, packagingDB, designDB } = useDatabase();
+const canManageInvoiceAssets = computed(() => true);
 
 const loadPrintPrefs = () => {
     try {
         const raw = localStorage.getItem(INVOICE_PRINT_PREFS_KEY);
-        if (!raw) return;
-        const parsed = JSON.parse(raw);
-        stampEnabled.value = true;
-        stampImageDataUrl.value = typeof parsed.stampImageDataUrl === 'string' ? parsed.stampImageDataUrl : '';
+        const parsed = raw ? JSON.parse(raw) : {};
+        stampEnabled.value = typeof parsed.stampEnabled === 'boolean' ? parsed.stampEnabled : true;
+        stampImageDataUrl.value = SYSTEM_STAMP_URL;
         stampOffsetX.value = Number.isFinite(Number(parsed.stampOffsetX)) ? Number(parsed.stampOffsetX) : 0;
         stampOffsetY.value = Number.isFinite(Number(parsed.stampOffsetY)) ? Number(parsed.stampOffsetY) : 0;
         const scale = Number(parsed.stampScale);
         stampScale.value = Number.isFinite(scale) ? Math.max(0.3, Math.min(2.5, scale)) : 1;
-        signatureEnabled.value = Boolean(parsed.signatureEnabled);
-        signatureImageDataUrl.value = typeof parsed.signatureImageDataUrl === 'string' ? parsed.signatureImageDataUrl : '';
+        signatureEnabled.value = typeof parsed.signatureEnabled === 'boolean' ? parsed.signatureEnabled : true;
+        signatureImageDataUrl.value = SYSTEM_SIGNATURE_URL;
         signatureOffsetX.value = Number.isFinite(Number(parsed.signatureOffsetX)) ? Number(parsed.signatureOffsetX) : 0;
         signatureOffsetY.value = Number.isFinite(Number(parsed.signatureOffsetY)) ? Number(parsed.signatureOffsetY) : 0;
         const signatureScaleValue = Number(parsed.signatureScale);
         signatureScale.value = Number.isFinite(signatureScaleValue) ? Math.max(0.5, Math.min(2, signatureScaleValue)) : 1;
+        assetFrontLayer.value = parsed.assetFrontLayer === 'stamp' ? 'stamp' : 'signature';
     } catch (e) {}
 };
 
 const savePrintPrefs = () => {
     try {
         localStorage.setItem(INVOICE_PRINT_PREFS_KEY, JSON.stringify({
-            stampImageDataUrl: stampImageDataUrl.value || '',
+            stampEnabled: Boolean(stampEnabled.value),
             stampOffsetX: Number(stampOffsetX.value) || 0,
             stampOffsetY: Number(stampOffsetY.value) || 0,
             stampScale: Number(stampScale.value) || 1,
             signatureEnabled: Boolean(signatureEnabled.value),
-            signatureImageDataUrl: signatureImageDataUrl.value || '',
             signatureOffsetX: Number(signatureOffsetX.value) || 0,
             signatureOffsetY: Number(signatureOffsetY.value) || 0,
             signatureScale: Number(signatureScale.value) || 1,
+            assetFrontLayer: assetFrontLayer.value === 'stamp' ? 'stamp' : 'signature',
         }));
     } catch (e) {}
 };
 
-const readPngAsset = (event, onLoad) => {
-    const file = event?.target?.files?.[0];
-    if (!file) return;
-    if (!String(file.type || '').includes('png')) {
-        event.target.value = '';
+const loadManagerName = () => {
+    try {
+        const stored = localStorage.getItem(INVOICE_MANAGER_NAME_KEY);
+        managerName.value = typeof stored === 'string' ? stored : '';
+    } catch (e) {
+        managerName.value = '';
+    }
+};
+
+const saveManagerName = () => {
+    try {
+        const normalizedName = String(managerName.value || '');
+        if (!normalizedName) {
+            localStorage.removeItem(INVOICE_MANAGER_NAME_KEY);
+            return;
+        }
+        localStorage.setItem(INVOICE_MANAGER_NAME_KEY, normalizedName);
+    } catch (e) {}
+};
+
+const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
+
+const getAssetScaleLimits = (assetType) => assetType === 'stamp' ? STAMP_SCALE_LIMITS : SIGNATURE_SCALE_LIMITS;
+const getAssetScale = (assetType) => assetType === 'stamp' ? stampScale.value : signatureScale.value;
+const getAssetOffset = (assetType) => assetType === 'stamp'
+    ? { x: Number(stampOffsetX.value) || 0, y: Number(stampOffsetY.value) || 0 }
+    : { x: Number(signatureOffsetX.value) || 0, y: Number(signatureOffsetY.value) || 0 };
+const getAssetBaseWidth = (assetType) => assetType === 'stamp' ? STAMP_BASE_WIDTH : SIGNATURE_BASE_WIDTH;
+
+const setAssetScale = (assetType, nextScale) => {
+    const limits = getAssetScaleLimits(assetType);
+    const normalizedScale = clamp(Number(nextScale) || 1, limits.min, limits.max);
+    if (assetType === 'stamp') {
+        stampScale.value = normalizedScale;
         return;
     }
-    const reader = new FileReader();
-    reader.onload = () => {
-        onLoad(typeof reader.result === 'string' ? reader.result : '');
-        savePrintPrefs();
+    signatureScale.value = normalizedScale;
+};
+
+const setAssetOffset = (assetType, nextX, nextY) => {
+    const normalizedX = clamp(Number(nextX) || 0, -ASSET_OFFSET_LIMIT, ASSET_OFFSET_LIMIT);
+    const normalizedY = clamp(Number(nextY) || 0, -ASSET_OFFSET_LIMIT, ASSET_OFFSET_LIMIT);
+    if (assetType === 'stamp') {
+        stampOffsetX.value = normalizedX;
+        stampOffsetY.value = normalizedY;
+        return;
+    }
+    signatureOffsetX.value = normalizedX;
+    signatureOffsetY.value = normalizedY;
+};
+
+const endAssetInteraction = () => {
+    activeAssetInteraction.value = null;
+    window.removeEventListener('pointermove', handleAssetInteractionMove);
+    window.removeEventListener('pointerup', endAssetInteraction);
+    window.removeEventListener('pointercancel', endAssetInteraction);
+};
+
+function handleAssetInteractionMove(event) {
+    const interaction = activeAssetInteraction.value;
+    if (!interaction) return;
+
+    const deltaX = event.clientX - interaction.startX;
+    const deltaY = event.clientY - interaction.startY;
+
+    if (interaction.mode === 'drag') {
+        setAssetOffset(interaction.assetType, interaction.startOffsetX + deltaX, interaction.startOffsetY + deltaY);
+        return;
+    }
+
+    const nextScale = interaction.startScale * (1 + (deltaX / Math.max(interaction.startWidth, 40)));
+    setAssetScale(interaction.assetType, nextScale);
+}
+
+const startAssetInteraction = (assetType, mode, event) => {
+    if (!canManageInvoiceAssets.value) return;
+    if (event.button !== undefined && event.button !== 0) return;
+
+    selectedAsset.value = assetType;
+
+    const offset = getAssetOffset(assetType);
+    activeAssetInteraction.value = {
+        assetType,
+        mode,
+        startX: event.clientX,
+        startY: event.clientY,
+        startOffsetX: offset.x,
+        startOffsetY: offset.y,
+        startScale: getAssetScale(assetType),
+        startWidth: getAssetBaseWidth(assetType) * getAssetScale(assetType),
     };
-    reader.readAsDataURL(file);
-    event.target.value = '';
+
+    event.preventDefault();
+    event.stopPropagation();
+
+    window.addEventListener('pointermove', handleAssetInteractionMove);
+    window.addEventListener('pointerup', endAssetInteraction);
+    window.addEventListener('pointercancel', endAssetInteraction);
 };
 
-const handleStampUpload = (event) => {
+const startAssetDrag = (assetType, event) => startAssetInteraction(assetType, 'drag', event);
+const startAssetResize = (assetType, event) => startAssetInteraction(assetType, 'resize', event);
+const selectAsset = (assetType) => {
     if (!canManageInvoiceAssets.value) return;
-    readPngAsset(event, (value) => {
-        stampImageDataUrl.value = value;
-    });
+    selectedAsset.value = assetType;
 };
-
-const handleSignatureUpload = (event) => {
-    if (!canManageInvoiceAssets.value) return;
-    readPngAsset(event, (value) => {
-        signatureImageDataUrl.value = value;
-        signatureEnabled.value = true;
-    });
-};
-
-const clearStamp = () => {
-    stampImageDataUrl.value = '';
-    savePrintPrefs();
-};
-
-const clearSignature = () => {
-    signatureImageDataUrl.value = '';
-    signatureEnabled.value = false;
-    savePrintPrefs();
+const clearSelectedAsset = () => {
+    selectedAsset.value = null;
 };
 
 const showStampOnPrint = computed(() => stampEnabled.value && !!stampImageDataUrl.value);
 const stampStyle = computed(() => ({
-    transform: `translate(${Number(stampOffsetX.value) || 0}px, ${Number(stampOffsetY.value) || 0}px) scale(${Number(stampScale.value) || 1})`
+    width: `${STAMP_BASE_WIDTH * (Number(stampScale.value) || 1)}px`,
+    left: '18px',
+    top: '14px',
+    zIndex: assetFrontLayer.value === 'stamp' ? 4 : 2,
+    transform: `translate(${Number(stampOffsetX.value) || 0}px, ${Number(stampOffsetY.value) || 0}px)`,
 }));
 const showSignatureOnPrint = computed(() => signatureEnabled.value && !!signatureImageDataUrl.value);
 const signatureStyle = computed(() => ({
-    transform: `translate(${Number(signatureOffsetX.value) || 0}px, ${Number(signatureOffsetY.value) || 0}px) scale(${Number(signatureScale.value) || 1})`,
+    width: `${SIGNATURE_BASE_WIDTH * (Number(signatureScale.value) || 1)}px`,
+    left: '44px',
+    top: '84px',
+    zIndex: assetFrontLayer.value === 'signature' ? 4 : 2,
+    transform: `translate(${Number(signatureOffsetX.value) || 0}px, ${Number(signatureOffsetY.value) || 0}px)`,
 }));
+const approvalAssets = computed(() => {
+    const assets = [];
+
+    if (showStampOnPrint.value) {
+        assets.push({
+            type: 'stamp',
+            src: stampImageDataUrl.value,
+            alt: 'Печать',
+            boxClass: 'invoice-stamp-box',
+            imageClass: 'invoice-stamp',
+            style: stampStyle.value,
+            resizeLabel: 'Изменить размер печати',
+        });
+    }
+
+    if (showSignatureOnPrint.value) {
+        assets.push({
+            type: 'signature',
+            src: signatureImageDataUrl.value,
+            alt: 'Подпись',
+            boxClass: 'invoice-signature-box',
+            imageClass: 'invoice-signature',
+            style: signatureStyle.value,
+            resizeLabel: 'Изменить размер подписи',
+        });
+    }
+
+    return assets.sort((left, right) => {
+        if (left.type === right.type) return 0;
+        if (left.type === assetFrontLayer.value) return 1;
+        if (right.type === assetFrontLayer.value) return -1;
+        return 0;
+    });
+});
 const isDtfInvoice = computed(() => (
     props?.project?.invoiceMeta?.calculator === 'dtf'
     || (Array.isArray(props.layers) && props.layers.some((layer) => layer?.invoiceMeta?.calculator === 'dtf'))
@@ -173,20 +288,27 @@ const dtfGarmentSizeItems = computed(() => {
 
 watch(() => props.show, (newVal) => {
     if (newVal) {
-        const stored = localStorage.getItem('monocalc_invoice_counter');
-        let nextNum = stored ? parseInt(stored) + 1 : 1932;
+        let stored = null;
+        try {
+            stored = localStorage.getItem('monocalc_invoice_counter');
+        } catch (e) {}
+        let nextNum = stored ? parseInt(stored, 10) + 1 : 1932;
         invoiceNumber.value = nextNum;
-        localStorage.setItem('monocalc_invoice_counter', nextNum);
+        try {
+            localStorage.setItem('monocalc_invoice_counter', String(nextNum));
+        } catch (e) {}
         loadPrintPrefs();
-        stampEnabled.value = true;
-        managerName.value = '';
+        loadManagerName();
+        selectedAsset.value = null;
         prefsExpanded.value = false;
-        stampControlsExpanded.value = false;
-        signatureControlsExpanded.value = false;
     }
 });
 
-watch([stampEnabled, stampImageDataUrl, stampOffsetX, stampOffsetY, stampScale, signatureEnabled, signatureImageDataUrl, signatureOffsetX, signatureOffsetY, signatureScale], () => {
+watch(managerName, () => {
+    saveManagerName();
+});
+
+watch([stampEnabled, stampOffsetX, stampOffsetY, stampScale, signatureEnabled, signatureOffsetX, signatureOffsetY, signatureScale, assetFrontLayer], () => {
     savePrintPrefs();
 });
 
@@ -624,6 +746,10 @@ const printInvoice = () => {
         window.print();
     }, 100);
 };
+
+onUnmounted(() => {
+    endAssetInteraction();
+});
 </script>
 
 <template>
@@ -664,89 +790,56 @@ const printInvoice = () => {
                                         <div class="invoice-prefs-eyebrow">Настройки вывода</div>
                                         <div class="invoice-prefs-heading">Печать и подпись</div>
                                     </div>
+                                    <p class="invoice-prefs-summary">Тяните объект мышкой, размер меняйте за угол.</p>
                                 </div>
 
-                                <div class="invoice-prefs-section">
+                                <div class="invoice-prefs-section invoice-prefs-section--compact">
                                     <div class="invoice-prefs-section-head">
                                         <div class="invoice-prefs-section-title">Печать</div>
-                                        <button
-                                            v-if="canManageInvoiceAssets && stampImageDataUrl"
-                                            type="button"
-                                            class="invoice-section-toggle"
-                                            @click="stampControlsExpanded = !stampControlsExpanded"
-                                        >
-                                            {{ stampControlsExpanded ? 'Свернуть' : 'Показать настройки' }}
-                                        </button>
                                     </div>
                                     <div class="invoice-prefs-row invoice-prefs-row--inline">
                                         <label class="invoice-check">
                                             <input v-model="stampEnabled" type="checkbox" class="invoice-check-input">
                                             <span class="invoice-check-toggle" :class="{ 'is-on': stampEnabled }"><span class="invoice-check-knob"></span></span>
-                                            <span>Добавить печать</span>
-                                        </label>
-                                        <div v-if="canManageInvoiceAssets" class="invoice-prefs-actions">
-                                            <label class="invoice-upload-btn">
-                                                <input type="file" accept="image/png" @change="handleStampUpload" class="hidden">
-                                                <span>{{ stampImageDataUrl ? 'Заменить PNG' : 'Загрузить PNG' }}</span>
-                                            </label>
-                                            <button v-if="stampImageDataUrl" @click="clearStamp" class="invoice-clear-btn" type="button">Убрать</button>
-                                        </div>
-                                    </div>
-                                    <div v-if="canManageInvoiceAssets && stampImageDataUrl && stampControlsExpanded" class="invoice-prefs-row invoice-prefs-sliders">
-                                        <label>
-                                            <span>Смещение X</span>
-                                            <input v-model.number="stampOffsetX" type="range" min="-220" max="220" step="1" class="invoice-slider">
-                                        </label>
-                                        <label>
-                                            <span>Смещение Y</span>
-                                            <input v-model.number="stampOffsetY" type="range" min="-220" max="220" step="1" class="invoice-slider">
-                                        </label>
-                                        <label>
-                                            <span>Размер</span>
-                                            <input v-model.number="stampScale" type="range" min="0.3" max="2.5" step="0.01" class="invoice-slider">
+                                            <span>Печать</span>
                                         </label>
                                     </div>
                                 </div>
 
-                                <div class="invoice-prefs-section">
+                                <div class="invoice-prefs-section invoice-prefs-section--compact">
                                     <div class="invoice-prefs-section-head">
                                         <div class="invoice-prefs-section-title">Подпись</div>
-                                        <button
-                                            v-if="signatureImageDataUrl"
-                                            type="button"
-                                            class="invoice-section-toggle"
-                                            @click="signatureControlsExpanded = !signatureControlsExpanded"
-                                        >
-                                            {{ signatureControlsExpanded ? 'Свернуть' : 'Показать настройки' }}
-                                        </button>
                                     </div>
                                     <div class="invoice-prefs-row invoice-prefs-row--inline">
                                         <label class="invoice-check">
                                             <input v-model="signatureEnabled" type="checkbox" class="invoice-check-input">
                                             <span class="invoice-check-toggle" :class="{ 'is-on': signatureEnabled }"><span class="invoice-check-knob"></span></span>
-                                            <span>Добавить подпись</span>
+                                            <span>Подпись</span>
                                         </label>
-                                        <div v-if="canManageInvoiceAssets" class="invoice-prefs-actions">
-                                            <label class="invoice-upload-btn">
-                                                <input type="file" accept="image/png" @change="handleSignatureUpload" class="hidden">
-                                                <span>{{ signatureImageDataUrl ? 'Заменить PNG' : 'Загрузить PNG' }}</span>
-                                            </label>
-                                            <button v-if="signatureImageDataUrl" @click="clearSignature" class="invoice-clear-btn" type="button">Убрать</button>
-                                        </div>
                                     </div>
-                                    <div v-if="signatureImageDataUrl && signatureControlsExpanded" class="invoice-prefs-row invoice-prefs-sliders">
-                                        <label>
-                                            <span>Смещение X</span>
-                                            <input v-model.number="signatureOffsetX" type="range" min="-220" max="220" step="1" class="invoice-slider">
-                                        </label>
-                                        <label>
-                                            <span>Смещение Y</span>
-                                            <input v-model.number="signatureOffsetY" type="range" min="-220" max="220" step="1" class="invoice-slider">
-                                        </label>
-                                        <label>
-                                            <span>Размер подписи</span>
-                                            <input v-model.number="signatureScale" type="range" min="0.5" max="2" step="0.01" class="invoice-slider">
-                                        </label>
+                                </div>
+
+                                <div v-if="stampImageDataUrl && signatureImageDataUrl" class="invoice-prefs-section invoice-prefs-section--compact">
+                                    <div class="invoice-prefs-section-head">
+                                        <div class="invoice-prefs-section-title">Порядок слоёв</div>
+                                    </div>
+                                    <div class="invoice-layer-order-toggle">
+                                        <button
+                                            type="button"
+                                            class="invoice-layer-order-btn"
+                                            :class="{ 'is-active': assetFrontLayer === 'stamp' }"
+                                            @click="assetFrontLayer = 'stamp'"
+                                        >
+                                            Печать выше
+                                        </button>
+                                        <button
+                                            type="button"
+                                            class="invoice-layer-order-btn"
+                                            :class="{ 'is-active': assetFrontLayer === 'signature' }"
+                                            @click="assetFrontLayer = 'signature'"
+                                        >
+                                            Подпись выше
+                                        </button>
                                     </div>
                                 </div>
                             </div>
@@ -785,7 +878,34 @@ const printInvoice = () => {
                 </div>
 
                 <div v-if="page.isLast" class="invoice-summary">
-                    <div class="flex justify-end mb-6">
+                    <div class="invoice-summary-layout mb-6">
+                        <div class="invoice-approval-panel">
+                            <div class="invoice-approval-stage" @pointerdown.self="clearSelectedAsset">
+                                <div
+                                    v-for="asset in approvalAssets"
+                                    :key="asset.type"
+                                    :class="[
+                                        asset.boxClass,
+                                        { 'invoice-asset-box--interactive': canManageInvoiceAssets && selectedAsset === asset.type }
+                                    ]"
+                                    :style="asset.style"
+                                    @click.stop="selectAsset(asset.type)"
+                                    @pointerdown="startAssetDrag(asset.type, $event)"
+                                >
+                                    <img :src="asset.src" :alt="asset.alt" :class="asset.imageClass">
+                                    <button
+                                        v-if="canManageInvoiceAssets && selectedAsset === asset.type"
+                                        type="button"
+                                        class="invoice-asset-resize-handle no-print"
+                                        :aria-label="asset.resizeLabel"
+                                        @pointerdown.stop.prevent="startAssetResize(asset.type, $event)"
+                                    ></button>
+                                </div>
+                                <div class="invoice-approval-line"></div>
+                                <div class="invoice-approval-caption">место для печати / подписи</div>
+                            </div>
+                        </div>
+
                         <div class="w-64 space-y-3 invoice-total-block">
                             <div v-if="markupRubOne > 0" class="flex justify-between text-sm text-gray-600">
                                 <span>Наценка ({{ project.markup }}%):</span>
@@ -807,10 +927,9 @@ const printInvoice = () => {
                                 <span class="text-base font-black uppercase tracking-widest text-black">Итого:</span>
                                 <span class="invoice-total-line"><span class="invoice-total-number">{{ formatMoney(totalForAll) }}</span><span class="invoice-total-currency">₽</span></span>
                             </div>
-                            <img v-if="showStampOnPrint" :src="stampImageDataUrl" alt="Печать" class="invoice-stamp" :style="stampStyle">
                         </div>
                     </div>
-                    <div class="invoice-footer flex justify-between items-end pt-8 border-t border-gray-200"><div class="text-[10px] text-gray-400 max-w-xs leading-relaxed">Предложение действительно в течение 3 рабочих дней.<br>Не является публичной офертой.</div><div class="text-center"><div class="invoice-signature-slot"><img v-if="showSignatureOnPrint" :src="signatureImageDataUrl" alt="Подпись" class="invoice-signature" :style="signatureStyle"></div><div class="text-[18px] font-black text-black leading-none min-h-[22px] mb-2">{{ managerName || ' ' }}</div><div class="w-44 h-px bg-gray-400"></div><div class="text-[11px] font-bold uppercase tracking-widest text-gray-400 mt-2">Менеджер</div></div></div>
+                    <div class="invoice-footer flex justify-between items-end pt-8 border-t border-gray-200"><div class="text-[10px] text-gray-400 max-w-xs leading-relaxed">Предложение действительно в течение 3 рабочих дней.<br>Не является публичной офертой.</div><div class="text-center"><div class="text-[18px] font-black text-black leading-none min-h-[22px] mb-2">{{ managerName || ' ' }}</div><div class="w-44 h-px bg-gray-400"></div><div class="text-[11px] font-bold uppercase tracking-widest text-gray-400 mt-2">Менеджер</div></div></div>
                 </div>
             </div>
             
@@ -985,13 +1104,13 @@ const printInvoice = () => {
     left: 50%;
     right: auto;
     transform: translateX(-50%);
-    display: flex;
-    flex-direction: column;
-    gap: 0.8rem;
-    width: min(calc(100vw - 2rem), 520px);
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0.55rem;
+    width: min(calc(100vw - 2rem), 430px);
     color: #fff;
-    padding: 1rem;
-    border-radius: 1.1rem;
+    padding: 0.75rem;
+    border-radius: 0.95rem;
     background: rgba(17, 17, 19, 0.94);
     border: 1px solid rgba(255, 255, 255, 0.12);
     box-shadow: 0 24px 60px rgba(0, 0, 0, 0.34);
@@ -999,11 +1118,22 @@ const printInvoice = () => {
 }
 
 .invoice-prefs-header {
+    grid-column: 1 / -1;
     display: flex;
     align-items: flex-start;
     justify-content: space-between;
-    gap: 1rem;
-    padding: 0.1rem 0.1rem 0.2rem;
+    gap: 0.75rem;
+    padding: 0.05rem 0.05rem 0.1rem;
+}
+
+.invoice-prefs-summary {
+    margin: 0;
+    max-width: 190px;
+    padding-top: 0.15rem;
+    font-size: 10px;
+    line-height: 1.35;
+    text-align: right;
+    color: rgba(255, 255, 255, 0.68);
 }
 
 .invoice-prefs-eyebrow {
@@ -1016,7 +1146,7 @@ const printInvoice = () => {
 
 .invoice-prefs-heading {
     margin-top: 0.18rem;
-    font-size: 18px;
+    font-size: 15px;
     line-height: 1.1;
     font-weight: 900;
     color: #fff;
@@ -1025,11 +1155,15 @@ const printInvoice = () => {
 .invoice-prefs-section {
     display: flex;
     flex-direction: column;
-    gap: 0.7rem;
-    padding: 0.95rem;
-    border-radius: 0.95rem;
+    gap: 0.45rem;
+    padding: 0.7rem 0.75rem;
+    border-radius: 0.8rem;
     background: rgba(255, 255, 255, 0.03);
     border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.invoice-prefs-section--compact {
+    min-height: 0;
 }
 
 .invoice-prefs-section-head {
@@ -1040,7 +1174,7 @@ const printInvoice = () => {
 }
 
 .invoice-prefs-section-title {
-    font-size: 10px;
+    font-size: 9px;
     font-weight: 900;
     text-transform: uppercase;
     letter-spacing: 0.14em;
@@ -1081,15 +1215,15 @@ const printInvoice = () => {
 .invoice-prefs-row {
     display: flex;
     align-items: center;
-    gap: 0.75rem;
-    font-size: 11px;
+    gap: 0.55rem;
+    font-size: 10px;
     font-weight: 700;
     letter-spacing: 0.03em;
 }
 
 .invoice-prefs-row--inline {
     justify-content: space-between;
-    gap: 0.85rem;
+    gap: 0.55rem;
     flex-wrap: wrap;
 }
 
@@ -1124,8 +1258,8 @@ const printInvoice = () => {
 .invoice-check {
     display: inline-flex;
     align-items: center;
-    gap: 0.55rem;
-    font-size: 12px;
+    gap: 0.45rem;
+    font-size: 11px;
     font-weight: 700;
     cursor: pointer;
 }
@@ -1195,6 +1329,39 @@ const printInvoice = () => {
     margin-left: auto;
 }
 
+.invoice-asset-hint {
+    margin: 0;
+    font-size: 10px;
+    line-height: 1.35;
+    color: rgba(255, 255, 255, 0.72);
+}
+
+.invoice-layer-order-toggle {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0.65rem;
+    padding-top: 0.15rem;
+}
+
+.invoice-layer-order-btn {
+    height: 36px;
+    border-radius: 999px;
+    border: 1px solid rgba(255, 255, 255, 0.16);
+    background: rgba(255, 255, 255, 0.06);
+    color: rgba(255, 255, 255, 0.76);
+    font-size: 9px;
+    font-weight: 800;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    padding: 0 14px;
+}
+
+.invoice-layer-order-btn.is-active {
+    background: rgba(255, 255, 255, 0.16);
+    color: #fff;
+    border-color: rgba(255, 255, 255, 0.34);
+}
+
 .invoice-prefs-sliders {
     display: grid;
     grid-template-columns: 1fr;
@@ -1258,19 +1425,25 @@ const printInvoice = () => {
     box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.08);
 }
 
-.invoice-signature-slot {
-    height: 48px;
-    margin-bottom: 0.35rem;
-    display: flex;
-    align-items: flex-end;
+.invoice-signature-box {
+    position: absolute;
+    transform-origin: 0 0;
+    display: inline-flex;
+    align-items: center;
     justify-content: center;
+    box-sizing: border-box;
 }
 
 .invoice-signature {
-    max-width: 150px;
-    max-height: 46px;
+    display: block;
+    width: 100%;
+    max-width: none;
+    max-height: none;
+    height: auto;
     object-fit: contain;
     transform-origin: 50% 100%;
+    user-select: none;
+    pointer-events: none;
 }
 
 @media (max-width: 900px) {
@@ -1304,7 +1477,18 @@ const printInvoice = () => {
         right: auto;
         transform: none;
         width: 100%;
+        grid-template-columns: 1fr;
         margin-top: 0.65rem;
+    }
+
+    .invoice-prefs-header {
+        flex-direction: column;
+        align-items: flex-start;
+    }
+
+    .invoice-prefs-summary {
+        max-width: none;
+        text-align: left;
     }
 
     .invoice-prefs-row {
@@ -1328,6 +1512,10 @@ const printInvoice = () => {
     .invoice-prefs-actions {
         width: 100%;
         margin-left: 0;
+    }
+
+    .invoice-layer-order-toggle {
+        grid-template-columns: 1fr;
     }
 }
 
@@ -1376,19 +1564,125 @@ const printInvoice = () => {
     margin-top: auto;
 }
 
+.invoice-summary-layout {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-end;
+    gap: 22px;
+}
+
+.invoice-approval-panel {
+    flex: 1 1 auto;
+    min-width: 0;
+}
+
+.invoice-approval-stage {
+    position: relative;
+    min-height: 170px;
+    padding: 12px 0 30px;
+    overflow: visible;
+}
+
+.invoice-approval-line {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 18px;
+    height: 1px;
+    background: #d1d5db;
+}
+
+.invoice-approval-caption {
+    position: absolute;
+    left: 0;
+    bottom: 0;
+    font-size: 10px;
+    line-height: 1;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: #9ca3af;
+    font-weight: 700;
+}
+
 .invoice-total-block {
     position: relative;
 }
 
-.invoice-stamp {
+.invoice-stamp-box {
     position: absolute;
-    right: 10px;
-    bottom: -6px;
-    width: 140px;
-    max-width: 180px;
+    transform-origin: 0 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    box-sizing: border-box;
+}
+
+.invoice-stamp {
+    display: block;
+    width: 100%;
+    max-width: none;
     opacity: 0.95;
-    transform-origin: 100% 100%;
     pointer-events: none;
+    user-select: none;
+}
+
+.invoice-asset-box--interactive {
+    cursor: move;
+    outline: 1.5px solid rgba(17, 24, 39, 0.28);
+    outline-offset: 8px;
+    border-radius: 10px;
+    background: transparent;
+    box-shadow: 0 8px 18px rgba(17, 24, 39, 0.08);
+    transition: outline-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.invoice-asset-box--interactive:hover {
+    outline-color: rgba(17, 24, 39, 0.46);
+    box-shadow: 0 12px 24px rgba(17, 24, 39, 0.12);
+}
+
+.invoice-asset-resize-handle {
+    position: absolute;
+    right: -10px;
+    bottom: -10px;
+    width: 22px;
+    height: 22px;
+    border: 2px solid rgba(17, 24, 39, 0.82);
+    border-radius: 999px;
+    background: #fff;
+    box-shadow: 0 10px 24px rgba(17, 24, 39, 0.18);
+    cursor: nwse-resize;
+}
+
+.invoice-asset-resize-handle::before,
+.invoice-asset-resize-handle::after {
+    content: '';
+    position: absolute;
+    background: #111827;
+    border-radius: 999px;
+}
+
+.invoice-asset-resize-handle::before {
+    width: 9px;
+    height: 2px;
+    inset: 9px 5px auto;
+}
+
+.invoice-asset-resize-handle::after {
+    width: 2px;
+    height: 9px;
+    inset: 5px auto 5px 9px;
+}
+
+@media (max-width: 760px) {
+    .invoice-summary-layout {
+        flex-direction: column;
+        align-items: stretch;
+    }
+
+    .invoice-approval-stage {
+        min-height: 190px;
+    }
 }
 
 @media print {
@@ -1463,6 +1757,12 @@ const printInvoice = () => {
         page-break-after: always !important;
     }
 
+    .invoice-asset-box--interactive {
+        outline: none !important;
+        box-shadow: none !important;
+        cursor: default !important;
+    }
+
     .invoice-sheet:last-of-type {
         break-after: auto !important;
         page-break-after: auto !important;
@@ -1475,15 +1775,57 @@ const printInvoice = () => {
 
     .invoice-summary {
         background: #fff !important;
+        padding: 14mm !important;
         margin-top: auto !important;
         break-inside: avoid !important;
         page-break-inside: avoid !important;
+    }
+
+    .invoice-summary-layout {
+        position: relative !important;
+        align-items: flex-end !important;
+        gap: 22px !important;
+        min-height: 170px !important;
+    }
+
+    .invoice-approval-panel {
+        position: absolute !important;
+        left: 0 !important;
+        right: calc(16rem + 22px) !important;
+        top: 0 !important;
+        bottom: 0 !important;
+        overflow: visible !important;
+        pointer-events: none !important;
+    }
+
+    .invoice-approval-stage {
+        position: relative !important;
+        height: 100% !important;
+        min-height: 170px !important;
+        padding: 12px 0 30px !important;
+        overflow: visible !important;
+    }
+
+    .invoice-approval-line {
+        bottom: 18px !important;
+    }
+
+    .invoice-approval-caption {
+        bottom: 0 !important;
     }
 
     .invoice-footer {
         margin-top: auto !important;
         break-inside: avoid !important;
         page-break-inside: avoid !important;
+    }
+
+    .invoice-total-block {
+        position: relative !important;
+        z-index: 2 !important;
+        width: 16rem !important;
+        margin-left: auto !important;
+        background: transparent !important;
     }
 
     .invoice-table-wrap table {

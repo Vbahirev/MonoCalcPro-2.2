@@ -162,6 +162,10 @@ const pendingProjectSyncCount = computed(() => pendingProjectQueue.value.length)
 let networkListenersBound = false;
 let networkProbeIntervalId = null;
 let networkProbeInFlight = false;
+let unsubscribeAuthListener = null;
+let unsubscribeUsersListener = null;
+let unsubscribeSettingsListener = null;
+let unsubscribeHistoryListener = null;
 
 // Legacy flags mapping (compat): existing UI still asks for old keys.
 const LEGACY_PERMISSION_MAP = {
@@ -178,10 +182,20 @@ const LEGACY_PERMISSION_MAP = {
 
 // Superadmin UID fallback (must match Firestore rules owner UID)
 const DEFAULT_SUPERADMIN_UID = 'sGGQraRarlZAtRJKgMA26TB75MN2';
-const DEFAULT_SUPERADMIN_EMAIL = 'viktor19971997@gmail.com';
 
 export function useDatabase() {
     const hasHistoryWriteAccess = () => hasPermission('canSaveHistory') || hasPermission('history.write');
+
+    const clearUserScopedSubscriptions = () => {
+        if (typeof unsubscribeUsersListener === 'function') {
+            try { unsubscribeUsersListener(); } catch {}
+        }
+        if (typeof unsubscribeHistoryListener === 'function') {
+            try { unsubscribeHistoryListener(); } catch {}
+        }
+        unsubscribeUsersListener = null;
+        unsubscribeHistoryListener = null;
+    };
 
     const setOfflineState = () => {
         isOfflineMode.value = true;
@@ -352,16 +366,22 @@ export function useDatabase() {
         }
 
         // Загрузка из кэша для скорости
-        const cachedDB = localStorage.getItem(DB_CACHE_KEY);
+        let cachedDB = null;
+        try {
+            cachedDB = localStorage.getItem(DB_CACHE_KEY);
+        } catch (e) {
+            cachedDB = null;
+        }
         if (cachedDB) { 
             try { applyData(JSON.parse(cachedDB)); } 
             catch (e) { console.error('Cache init error', e); } 
         }
 
         // Слушаем авторизацию
-        onAuthStateChanged(auth, async (currentUser) => {
+        unsubscribeAuthListener = onAuthStateChanged(auth, async (currentUser) => {
             if (currentUser) {
                 user.value = currentUser;
+                clearUserScopedSubscriptions();
                 // ⚠️ НЕ УДАЛЯТЬ: гарантируем ежедневное обслуживание мусорного слота
                 // уже после появления auth uid.
                 try { await ensureDailyGarbageSlot(currentUser.uid); } catch (e) {}
@@ -394,6 +414,7 @@ export function useDatabase() {
                     await flushPendingProjectQueue();
                 }
             } else {
+                clearUserScopedSubscriptions();
                 if (isOfflineMode.value && restoreCachedAuthState()) return;
                 setGuestState();
             }
@@ -405,6 +426,7 @@ export function useDatabase() {
     };
 
     const setGuestState = ({ clearSessionCache = true } = {}) => {
+        clearUserScopedSubscriptions();
         userRole.value = 'guest';
         userPermissions.value = {};
         user.value = null;
@@ -456,9 +478,7 @@ export function useDatabase() {
         // 1) VITE_SUPERADMIN_UID (if provided)
         // 2) DEFAULT_SUPERADMIN_UID fallback (project owner UID)
         const superUid = import.meta.env.VITE_SUPERADMIN_UID || DEFAULT_SUPERADMIN_UID;
-        const superEmail = (import.meta.env.VITE_SUPERADMIN_EMAIL || DEFAULT_SUPERADMIN_EMAIL || '').toLowerCase();
-        const currentEmail = (currentUser.email || '').toLowerCase();
-        if ((superUid && currentUser.uid === superUid) || (superEmail && currentEmail === superEmail)) {
+        if (superUid && currentUser.uid === superUid) {
             tokenRole = 'superadmin';
         }
         let effectiveRole = (tokenRole || roleFromDb || 'guest');
@@ -522,10 +542,17 @@ export function useDatabase() {
         /* guard users list */
                 // Only admin/superadmin (or explicit permission) should listen to users list
         if (!(userRole.value === 'admin' || userRole.value === 'superadmin') && !hasPermission('users.list.view')) {
+            if (typeof unsubscribeUsersListener === 'function') {
+                try { unsubscribeUsersListener(); } catch {}
+            }
+            unsubscribeUsersListener = null;
             return;
         }
         const q = query(collection(db, 'users'));
-        onSnapshot(q, (snapshot) => {
+        if (typeof unsubscribeUsersListener === 'function') {
+            try { unsubscribeUsersListener(); } catch {}
+        }
+        unsubscribeUsersListener = onSnapshot(q, (snapshot) => {
             allUsers.value = snapshot.docs.map(doc => ({
                 id: doc.id,
                 ...doc.data()
@@ -561,7 +588,11 @@ export function useDatabase() {
         syncStatus.value = 'syncing';
         const docRef = doc(db, "settings", "global_config");
 
-        onSnapshot(docRef, async (docSnap) => {
+        if (typeof unsubscribeSettingsListener === 'function') {
+            try { unsubscribeSettingsListener(); } catch {}
+        }
+
+        unsubscribeSettingsListener = onSnapshot(docRef, async (docSnap) => {
             const browserOnline = typeof navigator !== 'undefined' ? navigator.onLine : true;
             if (!browserOnline) {
                 isOfflineMode.value = true;
@@ -572,7 +603,9 @@ export function useDatabase() {
                 isRemoteUpdate.value = true; 
                 const data = normalizeGlobalData(docSnap.data());
                 applyData(data);
-                localStorage.setItem(DB_CACHE_KEY, JSON.stringify(data));
+                try {
+                    localStorage.setItem(DB_CACHE_KEY, JSON.stringify(data));
+                } catch (e) {}
                 syncStatus.value = isOfflineMode.value ? 'offline' : 'success';
                 await nextTick();
                 isRemoteUpdate.value = false;
@@ -615,7 +648,7 @@ export function useDatabase() {
 
     // --- 3. СОХРАНЕНИЕ НАСТРОЕК ---
     
-    // ===== ARCHIVE HELPERS (универсальный архив удалённых данных) =====
+    // ===== TRASH HELPERS (единый контур корзины удалённых данных) =====
     const makeKey = (x) => {
         if (!x) return '';
         if (typeof x === 'string') return x;
@@ -1113,6 +1146,7 @@ const saveFullDatabase = async () => {
 
             const data = snap.data();
             const toTrashRef = trashDocRef(uid, id);
+            const projectId = String(data?.id || fromRef.id || id || '');
             // /users/{uid}/trash forbids update in rules; recreate doc to keep operation in "create" path.
             try { await deleteDoc(toTrashRef); } catch (_) {}
 
@@ -1135,6 +1169,24 @@ const saveFullDatabase = async () => {
                 console.warn('[GARBAGE] write skipped:', garbageErr?.code || garbageErr?.message || garbageErr);
             }
             await deleteDoc(fromRef);
+
+            await safeWriteAdminAudit(uid, {
+                action: 'delete',
+                actorUid: u.uid,
+                actorEmail: u.email || user.value?.email || null,
+                actorRole: userRole.value || null,
+                entityType: 'history',
+                entityId: projectId,
+                entityPath: fromRef.path,
+                before: summarizeProjectAuditPayload(data, projectId),
+                after: {
+                    status: 'moved_to_trash',
+                    trashPath: toTrashRef.path,
+                    trashId: id,
+                },
+                source: 'history-delete',
+            });
+
             return { status: 'success', message: 'Проект перемещен в корзину' };
         } catch (e) {
             console.error('Delete History Error:', e);
@@ -1153,11 +1205,36 @@ const saveFullDatabase = async () => {
         }
     };
 
-    const restoreCloudHistoryFromTrash = async (id) => {
+    const restoreCloudHistoryFromTrash = async (id, options = {}) => {
         try {
             const u = await requireUserAsync();
             if (!u?.uid) throw new Error('Необходимо войти в аккаунт');
-            return await _restoreFromTrash(u.uid, id);
+            const trashRef = trashDocRef(u.uid, id);
+            const trashSnap = await getDoc(trashRef);
+            const beforeData = trashSnap.exists() ? trashSnap.data() : null;
+            const result = await _restoreFromTrash(u.uid, id, options);
+
+            await safeWriteAdminAudit(u.uid, {
+                action: 'restore',
+                actorUid: u.uid,
+                actorEmail: u.email || user.value?.email || null,
+                actorRole: userRole.value || null,
+                entityType: result?.entityType || mapTrashItemToAuditEntityType(beforeData?.itemType || beforeData?.type),
+                entityId: result?.entityId || inferTrashRestoreEntityId(beforeData, id, options),
+                entityPath: result?.entityPath || inferTrashRestoreEntityPath(u.uid, beforeData, id, options),
+                before: summarizeTrashAuditPayload({ id, ...(beforeData || {}) }),
+                after: {
+                    status: 'restored',
+                    restoreMode: result?.restoreMode || (options?.mode === 'copy' ? 'copy' : 'replace'),
+                    restoredEntityType: result?.entityType || mapTrashItemToAuditEntityType(beforeData?.itemType || beforeData?.type),
+                    restoredEntityId: result?.entityId || inferTrashRestoreEntityId(beforeData, id, options),
+                    restoredEntityPath: result?.entityPath || inferTrashRestoreEntityPath(u.uid, beforeData, id, options),
+                    sourceTrashId: id,
+                },
+                source: 'trash-restore',
+            });
+
+            return result;
         } catch (e) {
             console.error('Restore Trash Error:', e);
             return { status: 'error', message: e?.message || String(e) };
@@ -1168,7 +1245,27 @@ const saveFullDatabase = async () => {
         try {
             const u = await requireUserAsync();
             if (!u?.uid) throw new Error('Необходимо войти в аккаунт');
+            const trashRef = trashDocRef(u.uid, id);
+            const trashSnap = await getDoc(trashRef);
+            const beforeData = trashSnap.exists() ? trashSnap.data() : null;
             await _deleteForever(u.uid, id);
+
+            await safeWriteAdminAudit(u.uid, {
+                action: 'delete',
+                actorUid: u.uid,
+                actorEmail: u.email || user.value?.email || null,
+                actorRole: userRole.value || null,
+                entityType: 'trash',
+                entityId: id,
+                entityPath: trashRef.path,
+                before: summarizeTrashAuditPayload({ id, ...(beforeData || {}) }),
+                after: {
+                    status: 'deleted_forever',
+                    deletedFrom: trashRef.path,
+                },
+                source: 'trash-delete-forever',
+            });
+
             return { status: 'success', message: 'Удалено навсегда' };
         } catch (e) {
             console.error('Delete Trash Forever Error:', e);
@@ -1184,7 +1281,10 @@ const saveFullDatabase = async () => {
             historyCol(user.value.uid),
             orderBy('date', 'desc')
         );
-        onSnapshot(q, (snapshot) => {
+        if (typeof unsubscribeHistoryListener === 'function') {
+            try { unsubscribeHistoryListener(); } catch {}
+        }
+        unsubscribeHistoryListener = onSnapshot(q, (snapshot) => {
             userHistory.value = snapshot.docs.map(doc => ({
                 id: doc.id,
                 ...doc.data()
@@ -1204,7 +1304,6 @@ const saveFullDatabase = async () => {
             return false;
         }
         try {
-            console.debug('[DB] saveProjectToHistory called', { uid: user.value?.uid, isOfflineMode: isOfflineMode?.value, projectData });
             const dataToSave = {
                 ...projectData,
                 date: projectData?.date || new Date().toISOString(),
@@ -1267,6 +1366,76 @@ const saveFullDatabase = async () => {
 
     const isAdmin = computed(() => userRole.value === 'admin');
     const isSuperAdmin = computed(() => userRole.value === 'superadmin');
+
+    const canWriteAdminAudit = (uid = null) => {
+        return isSuperAdmin.value || String(uid || '') === DEFAULT_SUPERADMIN_UID;
+    };
+
+    const safeAuditValue = (value) => {
+        if (value == null) return value;
+        if (['string', 'number', 'boolean'].includes(typeof value)) return value;
+        if (Array.isArray(value)) return value.slice(0, 10).map((entry) => safeAuditValue(entry));
+        if (typeof value === 'object') {
+            return Object.fromEntries(
+                Object.entries(value)
+                    .slice(0, 20)
+                    .map(([key, entryValue]) => [key, safeAuditValue(entryValue)])
+            );
+        }
+        return String(value);
+    };
+
+    const summarizeProjectAuditPayload = (data, fallbackId = null) => ({
+        id: data?.id || fallbackId || null,
+        name: data?.name || data?.state?.project?.name || null,
+        client: data?.client || data?.state?.project?.client || null,
+        qty: Number(data?.qty || data?.state?.project?.qty || 0) || null,
+        total: Number(data?.totalOrder || data?.total || 0) || null,
+        savedAt: data?.savedAt || data?.date || null,
+    });
+
+    const mapTrashItemToAuditEntityType = (itemType) => {
+        const normalized = String(itemType || '').trim().toLowerCase();
+        if (normalized === 'settings') return 'settings';
+        if (normalized === 'users') return 'users';
+        return 'history';
+    };
+
+    const inferTrashRestoreEntityId = (data, fallbackId = null, options = {}) => {
+        const entityType = mapTrashItemToAuditEntityType(data?.itemType || data?.type);
+        if (entityType === 'settings') return 'global_config';
+        if (options?.mode === 'copy') return fallbackId || null;
+        return data?.sourceHistoryId || data?.id || fallbackId || null;
+    };
+
+    const inferTrashRestoreEntityPath = (uid, data, fallbackId = null, options = {}) => {
+        const entityType = mapTrashItemToAuditEntityType(data?.itemType || data?.type);
+        if (entityType === 'settings') return 'settings/global_config';
+        if (entityType === 'users') return `users/${fallbackId || data?.id || ''}`;
+        return `users/${uid}/history/${inferTrashRestoreEntityId(data, fallbackId, options) || ''}`;
+    };
+
+    const summarizeTrashAuditPayload = (data) => ({
+        id: data?.id || null,
+        itemType: data?.itemType || data?.type || null,
+        dataType: data?.dataType || null,
+        title: data?.title || data?.name || data?.payload?.name || data?.payload?.title || data?.state?.project?.name || null,
+        sourceHistoryId: data?.sourceHistoryId || null,
+        deletedAtISO: data?.deletedAtISO || null,
+        expiresAtISO: data?.expiresAtISO || null,
+        deletedBy: data?.deletedBy || data?.deletedByUid || null,
+        deletedByEmail: data?.deletedByEmail || null,
+        payload: safeAuditValue(data?.payload || null),
+    });
+
+    const safeWriteAdminAudit = async (uid, event) => {
+        if (!canWriteAdminAudit(uid)) return;
+        try {
+            await writeAuditLog(event);
+        } catch (e) {
+            console.warn('[AuditLog] admin flow write failed', e);
+        }
+    };
 
     // --- AUDIT LOGS (STEP 5) ---
     const requireSuperAdmin = () => {

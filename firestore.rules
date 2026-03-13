@@ -9,10 +9,7 @@ service cloud.firestore {
     // Absolute superadmin (by UID) — never depends on user profile
     function isSuperAdmin() {
       return isSignedIn()
-        && (
-          request.auth.uid == "sGGQraRarlZAtRJKgMA26TB75MN2"
-          || request.auth.token.email == "viktor19971997@gmail.com"
-        );
+        && request.auth.uid == "sGGQraRarlZAtRJKgMA26TB75MN2";
     }
 
     // Safe self-profile getter (relies on /users/{uid} self-read rule below)

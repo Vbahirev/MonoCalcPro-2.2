@@ -16,13 +16,11 @@ export type UserAccess = {
  * - guest/client: only calc.use
  * - team/admin: permission must be within role caps AND explicitly enabled in user.permissions
  */
-const SUPERADMIN_UID = 'sGGQraRarlZAtRJKgMA26TB75MN2';
-const SUPERADMIN_EMAIL = 'viktor19971997@gmail.com';
+const SUPERADMIN_UID = import.meta.env.VITE_SUPERADMIN_UID || 'sGGQraRarlZAtRJKgMA26TB75MN2';
 
 export function canUser(user: UserAccess | null | undefined, perm: Permission): boolean {
   // Absolute superadmin override
-  const currentEmail = String(auth.currentUser?.email || '').toLowerCase();
-  if (auth.currentUser?.uid === SUPERADMIN_UID || currentEmail === SUPERADMIN_EMAIL) {
+  if (SUPERADMIN_UID && auth.currentUser?.uid === SUPERADMIN_UID) {
     return true;
   }
 

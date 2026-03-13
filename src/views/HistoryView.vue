@@ -249,21 +249,6 @@ const gridColumns = computed(() => {
     return 2; 
 });
 
-const displayList = computed(() => {
-    const list = [...filteredProjects.value];
-    const cols = gridColumns.value;
-    const remainder = list.length % cols;
-    if (remainder !== 0) {
-        const missing = cols - remainder;
-        for (let i = 0; i < missing; i++) list.push({ id: `placeholder-${i}`, isPlaceholder: true });
-    }
-    return list;
-});
-
-const listKey = computed(() => {
-    return `${searchQuery.value}-${selectedDate.value}-${selectedType.value}-${filteredProjects.value.length}`;
-});
-
 const modalContent = computed(() => {
     const p = confirmModal.value.item;
     if (confirmModal.value.type === 'load') {
@@ -706,31 +691,33 @@ onUnmounted(() => {
                         <button @click="resetFilters" :class="actionBtnClass">Сбросить фильтры</button>
                     </div>
 
-                    <Transition mode="out-in" name="grid-fade">
-                        <div :key="listKey" class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4 mb-auto relative">
-                            <div v-for="p in displayList" :key="p.id" 
+                    <TransitionGroup name="history-grid" tag="div" class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4 mb-auto relative">
+                            <div v-for="p in filteredProjects" :key="p.id" 
                                 @click="isSelectionMode ? toggleSelection(p) : askToLoad(p)"
                                 class="group bg-white dark:bg-[#1C1C1E] rounded-3xl p-5 shadow-[0_10px_30px_-10px_rgba(0,0,0,0.08)] dark:shadow-black/40 relative overflow-hidden flex flex-col min-h-40 transition-all duration-300 hover:shadow-2xl hover:-translate-y-1 cursor-pointer w-full"
                                 :class="[
-                                    p.isPlaceholder ? 'opacity-0 pointer-events-none shadow-none' : '',
                                     isSelectionMode && selectedIds.has(p.id) ? 'ring-2 ring-blue-500 scale-[0.98]' : ''
                                 ]"
                             >
-                                <template v-if="!p.isPlaceholder">
                                     <div class="absolute -bottom-6 -right-6 text-gray-50 dark:text-[#252525] group-hover:text-gray-100 dark:group-hover:text-[#2A2A2A] transition-all duration-500 group-hover:scale-110 group-hover:-rotate-12 pointer-events-none"><svg width="130" height="130" :viewBox="getHistoryCardAccentIcon(p.type || 'laser').viewBox" :fill="getHistoryCardAccentIcon(p.type || 'laser').filled ? 'currentColor' : 'none'" :stroke="getHistoryCardAccentIcon(p.type || 'laser').filled ? 'none' : 'currentColor'" :stroke-width="getHistoryCardAccentIcon(p.type || 'laser').strokeWidth || undefined"><path stroke-linecap="round" stroke-linejoin="round" :d="getHistoryCardAccentIcon(p.type || 'laser').path" /></svg></div>
                                     
-                                    <div v-if="isSelectionMode" class="absolute top-3 right-3 z-30 transition-transform" :class="selectedIds.has(p.id) ? 'scale-110' : 'scale-100'">
-                                        <div class="w-[34px] h-[34px] rounded-full border-2 flex items-center justify-center transition-colors shadow-sm"
-                                             :class="selectedIds.has(p.id) ? 'bg-blue-500 border-blue-500 shadow-lg shadow-blue-500/30' : 'border-gray-300 dark:border-gray-500 bg-white/80 dark:bg-black/50 backdrop-blur-sm'">
-                                            <svg v-if="selectedIds.has(p.id)" class="w-4 h-4 text-white" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>
+                                    <div class="relative z-10 mb-3 flex items-start justify-between gap-3">
+                                        <div class="min-w-0 flex-1">
+                                            <div class="inline-flex max-w-full items-center gap-1.5 px-2 py-1 bg-gray-100/80 dark:bg-white/10 backdrop-blur-md rounded-lg border border-gray-200/50 dark:border-white/5 w-fit"><svg class="w-3 h-3 text-gray-500 dark:text-gray-400 shrink-0" :viewBox="getHistoryCalcIcon(p.type || 'laser').viewBox" fill="currentColor" stroke="none"><path :d="getHistoryCalcIcon(p.type || 'laser').path" /></svg><span class="text-[9px] font-black text-gray-700 dark:text-gray-300 uppercase tracking-wider break-words">{{ (calcTypes.find(t => t.id === (p.type || 'laser')) || calcTypes[1]).label }}</span></div>
+                                        </div>
+                                        <div class="shrink-0 flex items-center justify-end min-w-[34px]">
+                                            <div v-if="isSelectionMode" class="z-30 transition-transform" :class="selectedIds.has(p.id) ? 'scale-110' : 'scale-100'">
+                                                <div class="w-[34px] h-[34px] rounded-full border-2 flex items-center justify-center transition-colors shadow-sm"
+                                                     :class="selectedIds.has(p.id) ? 'bg-blue-500 border-blue-500 shadow-lg shadow-blue-500/30' : 'border-gray-300 dark:border-gray-500 bg-white/80 dark:bg-black/50 backdrop-blur-sm'">
+                                                    <svg v-if="selectedIds.has(p.id)" class="w-4 h-4 text-white" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>
+                                                </div>
+                                            </div>
+                                            <button v-else @click.stop="askToDelete(p, $event)" class="p-2 bg-white/80 dark:bg-black/50 backdrop-blur-sm rounded-full text-gray-300 dark:text-gray-600 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 transition-all opacity-0 group-hover:opacity-100 z-20 scale-90 hover:scale-100 shadow-sm border border-gray-100 dark:border-white/5"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg></button>
                                         </div>
                                     </div>
-                                    <button v-else @click.stop="askToDelete(p, $event)" class="absolute top-3 right-3 p-2 bg-white/80 dark:bg-black/50 backdrop-blur-sm rounded-full text-gray-300 dark:text-gray-600 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 transition-all opacity-0 group-hover:opacity-100 z-20 scale-90 hover:scale-100 shadow-sm border border-gray-100 dark:border-white/5"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg></button>
-
-                                    <div class="relative z-10 mb-3"><div class="inline-flex items-center gap-1.5 px-2 py-1 bg-gray-100/80 dark:bg-white/10 backdrop-blur-md rounded-lg border border-gray-200/50 dark:border-white/5 w-fit"><svg class="w-3 h-3 text-gray-500 dark:text-gray-400" :viewBox="getHistoryCalcIcon(p.type || 'laser').viewBox" fill="currentColor" stroke="none"><path :d="getHistoryCalcIcon(p.type || 'laser').path" /></svg><span class="text-[9px] font-black text-gray-700 dark:text-gray-300 uppercase tracking-wider">{{ (calcTypes.find(t => t.id === (p.type || 'laser')) || calcTypes[1]).label }}</span></div></div>
-                                    <div class="relative z-10 flex-1 flex flex-col items-start pr-6 gap-1">
-                                        <h3 class="text-sm md:text-base font-black text-[#1d1d1f] dark:text-white leading-snug break-words">{{ p.name }}</h3>
-                                        <span v-if="p.client" class="text-[10px] font-bold text-gray-500 dark:text-gray-400 leading-tight break-words">{{ p.client }}</span>
+                                    <div class="relative z-10 flex-1 min-w-0 w-full flex flex-col items-start gap-1">
+                                            <h3 class="w-full min-w-0 text-sm md:text-base font-black text-[#1d1d1f] dark:text-white leading-snug break-words">{{ p.name }}</h3>
+                                            <span v-if="p.client" class="w-full min-w-0 text-[10px] font-bold text-gray-500 dark:text-gray-400 leading-tight break-words">{{ p.client }}</span>
                                     </div>
                                     <div class="flex flex-col relative z-10 mt-3 mb-2"><span class="text-xs font-bold text-gray-500 dark:text-gray-400 uppercase tracking-wide leading-none">{{ formatDateDisplay(p.date).date }}</span><span class="text-[9px] font-bold text-gray-300 dark:text-gray-600 leading-tight mt-0.5">{{ formatDateDisplay(p.date).time }}</span></div>
                                     <div class="relative z-10 flex items-end justify-between pt-2 border-t border-gray-50/50 dark:border-white/5"><div class="flex flex-col"><div class="flex items-baseline gap-0.5"><span class="text-lg md:text-xl font-black text-black dark:text-white tracking-tight leading-none">{{ parseInt(p.total).toLocaleString() }}</span><span class="text-[10px] font-bold text-gray-400">₽</span></div></div><div class="pl-3 pr-2 py-1.5 bg-[#1d1d1f] dark:bg-white group-hover:bg-black dark:group-hover:bg-gray-200 rounded-full text-white dark:text-black flex items-center gap-1 transition-colors"><span class="text-[9px] font-bold uppercase tracking-widest">Открыть</span><svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M5 12h14M12 5l7 7-7 7"/></svg></div></div>
@@ -748,11 +735,8 @@ onUnmounted(() => {
                                             </div>
                                         </div>
                                     </Transition>
-
-                                </template>
                             </div>
-                        </div>
-                    </Transition>
+                    </TransitionGroup>
 
                     <div v-if="historyHasMore && filteredProjects.length > 0" class="mt-8 flex justify-center">
                         <button
@@ -838,6 +822,39 @@ onUnmounted(() => {
 .modal-pop-enter-from, .modal-pop-leave-to { opacity: 0; }
 .grid-fade-enter-active, .grid-fade-leave-active { transition: all 0.25s ease-in-out; }
 .grid-fade-enter-from, .grid-fade-leave-to { opacity: 0; transform: translateY(10px) scale(0.98); }
+.history-grid-enter-active,
+.history-grid-leave-active {
+    transition: opacity 0.22s ease, transform 0.22s ease;
+}
+
+.history-grid-enter-from,
+.history-grid-leave-to {
+    opacity: 0;
+    transform: scale(0.96);
+}
+
+.history-grid-move {
+    transition: transform 0.22s ease;
+}
+
+.history-grid-leave-active {
+    position: absolute;
+    width: calc(25% - 12px);
+    pointer-events: none;
+    z-index: 0;
+}
+
+@media (max-width: 1023px) {
+    .history-grid-leave-active {
+        width: calc(33.333333% - 11px);
+    }
+}
+
+@media (max-width: 767px) {
+    .history-grid-leave-active {
+        width: calc(50% - 8px);
+    }
+}
 
 .no-flicker {
     will-change: transform;

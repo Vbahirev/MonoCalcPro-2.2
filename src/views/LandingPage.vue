@@ -9,13 +9,10 @@ import { auth } from '@/services/firebase';
 import { signOut } from 'firebase/auth';
 import AuthLogin from '@/components/AuthLogin.vue';
 
-// !!! ВАШ EMAIL АДМИНА !!!
-const ADMIN_EMAIL = 'viktor19971997@gmail.com'; 
-
 const router = useRouter();
 const { impactLight, impactMedium } = useHaptics();
 const { theme, setTheme } = useTheme(); 
-const { syncStatus, initDatabase, hasPermission, user: currentUser, isOfflineMode } = useDatabase(); 
+const { syncStatus, initDatabase, hasPermission, user: currentUser, isOfflineMode, isSuperAdmin } = useDatabase(); 
 const currentYear = new Date().getFullYear();
 
 // --- СОСТОЯНИЕ ---
@@ -40,8 +37,7 @@ const capsuleText = computed(() => {
 });
 
 const isAdmin = computed(() => {
-    const isSuperAdmin = currentUser.value && currentUser.value.email && currentUser.value.email.toLowerCase() === ADMIN_EMAIL.toLowerCase();
-    return isSuperAdmin || hasPermission('canViewSettings');
+    return isSuperAdmin.value || hasPermission('canViewSettings');
 });
 
 const canViewSettings = computed(() => isAdmin.value);
@@ -200,8 +196,13 @@ const openHistory = () => {
 };
 
 // --- ТЕМА ---
+const getSystemTheme = () => {
+    if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return 'light';
+    return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+};
+
 const effectiveTheme = computed(() => {
-    if (theme.value === 'system') return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+    if (theme.value === 'system') return getSystemTheme();
     return theme.value;
 });
 const toggleIcon = computed(() => effectiveTheme.value === 'dark' ? 'moon' : 'sun');

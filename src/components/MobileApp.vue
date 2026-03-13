@@ -251,7 +251,7 @@ const handleDuplicateLayer = (layer) => {
     addToast('Скопировано');
 };
 
-const copyToClipboard = async () => { await triggerAutoSave(); const t = `ЗАКАЗ "${project.value.name}"\nTotal: ${totals.value.total} ₽`; try { await navigator.clipboard.writeText(t); notificationSuccess(); addToast('Скопировано'); } catch (e) { addToast('Ошибка'); } };
+const copyToClipboard = async () => { await triggerAutoSave(); const t = `ЗАКАЗ "${project.value.name}"\nTotal: ${totals.value.total} ₽`; try { if (!navigator?.clipboard?.writeText) throw new Error('Clipboard API unavailable'); await navigator.clipboard.writeText(t); notificationSuccess(); addToast('Скопировано'); } catch (e) { addToast('Не удалось скопировать'); } };
 const confirmReset = () => { if(confirm('Сброс?')) { resetAll(); notificationSuccess(); addToast('Очищено'); } };
 
 // Helpers

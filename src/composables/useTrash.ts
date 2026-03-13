@@ -10,6 +10,7 @@ import {
   deleteDoc,
   addDoc,
   updateDoc,
+  writeBatch,
   arrayUnion,
   serverTimestamp,
   collection,
@@ -22,6 +23,47 @@ import { trashDoc, trashCol, historyDoc, historyCol, globalConfigDoc } from '@/c
 
 const DAY = 24 * 60 * 60 * 1000
 export const TRASH_TTL_DAYS = 30
+
+function makeCopyId(baseId: any) {
+  const normalized = String(baseId || 'restored').trim() || 'restored'
+  return `${normalized}_copy_${Date.now()}`
+}
+
+function appendCopySuffix(value: any) {
+  const normalized = String(value || '').trim()
+  if (!normalized) return 'Копия'
+  return normalized.includes('(копия)') ? normalized : `${normalized} (копия)`
+}
+
+function cloneForRestoreCopy(payload: any, nextId?: string) {
+  const cloned = payload ? JSON.parse(JSON.stringify(payload)) : {}
+
+  if (nextId) {
+    if (Object.prototype.hasOwnProperty.call(cloned, 'id')) cloned.id = nextId
+    if (Object.prototype.hasOwnProperty.call(cloned, 'dbId')) cloned.dbId = nextId
+  }
+
+  if (typeof cloned.name === 'string') cloned.name = appendCopySuffix(cloned.name)
+  if (typeof cloned.title === 'string') cloned.title = appendCopySuffix(cloned.title)
+  if (cloned?.state?.project && typeof cloned.state.project.name === 'string') {
+    cloned.state.project.name = appendCopySuffix(cloned.state.project.name)
+  }
+
+  return cloned
+}
+
+function normalizeRestoredEntityType(itemType: any) {
+  const normalized = String(itemType || '').trim().toLowerCase()
+  if (normalized === 'settings') return 'settings'
+  if (normalized === 'users') return 'users'
+  return 'history'
+}
+
+function buildRestoredEntityPath(uid: string, entityType: string, entityId: string) {
+  if (entityType === 'settings') return 'settings/global_config'
+  if (entityType === 'users') return `users/${entityId}`
+  return `users/${uid}/history/${entityId}`
+}
 
 // ─────────────────────────────────────────────
 // Запись в корзину (создаёт документ с детерминированным ID)
@@ -68,12 +110,14 @@ export async function listTrashItems(uid: string) {
 // ─────────────────────────────────────────────
 // Восстановление из корзины
 // ─────────────────────────────────────────────
-export async function restoreFromTrash(uid: string, id: string) {
+export async function restoreFromTrash(uid: string, id: string, options: { mode?: 'replace' | 'copy' } = {}) {
   const ref = trashDoc(uid, id)
   const snap = await getDoc(ref)
   if (!snap.exists()) throw new Error('Элемент не найден в корзине')
 
   const data: any = snap.data()
+  const restoreMode = options?.mode === 'copy' ? 'copy' : 'replace'
+  const entityType = normalizeRestoredEntityType(data.itemType || data.type)
 
   // Проверка срока хранения
   if (data.expiresAtISO && new Date(data.expiresAtISO).getTime() <= Date.now()) {
@@ -85,24 +129,50 @@ export async function restoreFromTrash(uid: string, id: string) {
 
   // Восстановление настроек → arrayUnion в global_config
   if (data.itemType === 'settings' && data.dataType && data.payload) {
-    await updateDoc(globalConfigDoc(), { [data.dataType]: arrayUnion(data.payload) })
-    await _writeRestoreAudit(uid, id, data)
-    await deleteDoc(ref)
-    return { status: 'success', message: 'Настройка восстановлена' }
+    const restoredPayload = restoreMode === 'copy'
+      ? cloneForRestoreCopy(data.payload, makeCopyId(data.payload?.id || data.payload?.dbId || data.id || id))
+      : data.payload
+    const batch = writeBatch(db)
+    batch.update(globalConfigDoc(), { [data.dataType]: arrayUnion(restoredPayload) })
+    batch.delete(ref)
+    await batch.commit()
+    await _writeRestoreAudit(uid, id, data, restoreMode)
+    return {
+      status: 'success',
+      message: restoreMode === 'copy' ? 'Настройка восстановлена как копия' : 'Настройка восстановлена',
+      restoreMode,
+      entityType,
+      entityId: 'global_config',
+      entityPath: buildRestoredEntityPath(uid, entityType, 'global_config'),
+    }
   }
 
   // Восстановление проекта/истории → запись в history
-  const historyId = clean?.sourceHistoryId || clean?.id || id
-  await setDoc(historyDoc(uid, historyId), {
-    ...clean,
+  const sourceHistoryId = clean?.sourceHistoryId || clean?.id || id
+  const historyId = restoreMode === 'copy' ? makeCopyId(sourceHistoryId) : sourceHistoryId
+  const payloadToRestore = restoreMode === 'copy'
+    ? cloneForRestoreCopy(clean, historyId)
+    : clean
+  const batch = writeBatch(db)
+  batch.set(historyDoc(uid, historyId), {
+    ...payloadToRestore,
     id: historyId,
+    sourceHistoryId,
     restoredAt: serverTimestamp(),
-    savedAt: clean.savedAt || new Date().toISOString(),
+    savedAt: payloadToRestore.savedAt || new Date().toISOString(),
   }, { merge: true })
+  batch.delete(ref)
+  await batch.commit()
 
-  await _writeRestoreAudit(uid, id, data)
-  await deleteDoc(ref)
-  return { status: 'success', message: 'Элемент восстановлен' }
+  await _writeRestoreAudit(uid, id, data, restoreMode)
+  return {
+    status: 'success',
+    message: restoreMode === 'copy' ? 'Элемент восстановлен как копия' : 'Элемент восстановлен',
+    restoreMode,
+    entityType,
+    entityId: historyId,
+    entityPath: buildRestoredEntityPath(uid, entityType, historyId),
+  }
 }
 
 // ─────────────────────────────────────────────
@@ -115,12 +185,13 @@ export async function deleteForever(uid: string, id: string) {
 // ─────────────────────────────────────────────
 // Внутренний: запись audit log восстановления
 // ─────────────────────────────────────────────
-async function _writeRestoreAudit(uid: string, trashId: string, data: any) {
+async function _writeRestoreAudit(uid: string, trashId: string, data: any, restoreMode: 'replace' | 'copy' = 'replace') {
   try {
     await addDoc(historyCol(uid), {
       audit: true,
       action: 'restore',
       source: 'trash',
+      restoreMode,
       type: data.itemType || data.type || 'unknown',
       title: data?.title || data?.name || data?.data?.name || 'Восстановление',
       restoredAt: serverTimestamp(),

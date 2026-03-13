@@ -82,6 +82,14 @@ const getPreferredStorage = () => {
   };
 };
 
+const readAutoSaveCounter = () => {
+  try {
+    return parseInt(localStorage.getItem(DTF_AUTOSAVE_COUNTER_KEY) || '1', 10) || 1;
+  } catch (error) {
+    return 1;
+  }
+};
+
 const createInitialLayer = (id, name = 'Принт 1') => ({
   id,
   name,
@@ -165,7 +173,7 @@ export function useDtfCalculator() {
   const design = ref([]);
   const materialConsumption = computed(() => []);
 
-  const autoSaveCounter = ref(parseInt(localStorage.getItem(DTF_AUTOSAVE_COUNTER_KEY) || '1', 10) || 1);
+  const autoSaveCounter = ref(readAutoSaveCounter());
   let layerIdCtr = 1;
   let pkgIdCtr = 100;
   let saveFireworkCounter = 0;
@@ -696,7 +704,7 @@ export function useDtfCalculator() {
 
   const validateProjectBeforeOutput = () => {
     if (!hasAnyValidLayer.value) {
-      showToast('Добавьте хотя бы один валидный принт с размером или форматом.');
+      showToast('Нельзя сформировать КП: добавьте данные для расчёта.');
       activeTab.value = 'layers';
       return false;
     }
@@ -1399,7 +1407,10 @@ export function useDtfCalculator() {
   }, { deep: true });
 
   onMounted(() => {
-    const restoredFromHistory = Boolean(sessionStorage.getItem(DTF_HISTORY_LOAD_KEY));
+    let restoredFromHistory = false;
+    try {
+      restoredFromHistory = Boolean(sessionStorage.getItem(DTF_HISTORY_LOAD_KEY));
+    } catch (error) {}
     restoreFromHistoryPayload();
     if (!restoredFromHistory) restoreDraftState();
     handleWindowScroll();

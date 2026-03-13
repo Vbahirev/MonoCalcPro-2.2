@@ -48,11 +48,11 @@ const router = createRouter({
       component: () => import('../views/TrashView.vue')
     },
 
-    // --- Архив удалённых данных ---
+    // --- Legacy redirect: archive -> trash ---
     {
       path: '/settings/archive',
       name: 'settings-archive',
-      component: () => import('../views/ArchiveView.vue')
+      redirect: '/settings/trash'
     },
 
     // --- Администрирование: структура данных (STEP 1-4) ---

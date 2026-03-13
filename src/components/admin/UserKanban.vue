@@ -20,6 +20,7 @@ const localPermissions = ref({});
 const isSearchActive = computed(() => !!searchQuery.value.trim());
 const isSaving = ref(false);
 const saveError = ref('');
+const DEPRECATED_PERMISSION_KEYS = ['invoice.stamp.edit'];
 
 const deleteConfirmUser = ref(null);
 const isDeleting = ref(false);
@@ -106,7 +107,6 @@ const PERMISSION_GROUPS = [
             { key: 'settings.materials.write', label: 'Редактирование материалов', desc: 'Добавление и изменение материалов' },
             { key: 'settings.prices.read', label: 'Просмотр цен', desc: 'Чтение прайсов услуг' },
             { key: 'settings.prices.write', label: 'Редактирование цен', desc: 'Изменение стоимости услуг' },
-            { key: 'invoice.stamp.edit', label: 'Редактирование печати в КП', desc: 'Загрузка и изменение PNG-печати в предпросмотре КП' },
         ],
     },
     {
@@ -162,7 +162,7 @@ const visiblePermissionGroups = computed(() => {
 const sanitizePermissionsByRole = (sourcePermissions = {}, roleRaw = 'guest') => {
     const role = normalizeRole(roleRaw);
     const preservedUnknown = Object.fromEntries(
-        Object.entries(sourcePermissions || {}).filter(([key]) => !MANAGED_PERMISSION_KEYS.includes(key))
+        Object.entries(sourcePermissions || {}).filter(([key]) => !MANAGED_PERMISSION_KEYS.includes(key) && !DEPRECATED_PERMISSION_KEYS.includes(key))
     );
 
     if (role === 'superadmin') {

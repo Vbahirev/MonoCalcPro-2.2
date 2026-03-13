@@ -5,6 +5,7 @@ import {
   updateDoc,
   getDocs,
   deleteDoc,
+  writeBatch,
   query,
   orderBy,
   where,
@@ -102,14 +103,17 @@ export async function restoreTrash(uid: string, id: string, target: 'history' | 
   delete data.deletedAtISO
   delete data.expiresAtISO
 
+  const batch = writeBatch(db)
+
   if (target === 'history') {
-    await setDoc(historyDoc(uid, id), { ...data, restoredAt: serverTimestamp() }, { merge: true })
+    batch.set(historyDoc(uid, id), { ...data, restoredAt: serverTimestamp() }, { merge: true })
   } else if (target === 'custom' && customPath?.col) {
     // safe minimal: write back under users/{uid}/{col}/{id}
-    await setDoc(doc(db as any, 'users', uid, customPath.col, id), { ...data, restoredAt: serverTimestamp() }, { merge: true })
+    batch.set(doc(db as any, 'users', uid, customPath.col, id), { ...data, restoredAt: serverTimestamp() }, { merge: true })
   }
 
-  await deleteDoc(ref)
+  batch.delete(ref)
+  await batch.commit()
   return data
 }
 

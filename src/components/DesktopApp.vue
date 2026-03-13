@@ -39,6 +39,7 @@ const {
     addDesign, removeDesign,
     saveToHistory,
     triggerAutoSave,
+    validateProjectBeforeOutput,
     showToast,
     runToastAction
 } = useCalculator(typeof props.calculatorId === 'object' ? props.calculatorId.value : props.calculatorId);
@@ -480,20 +481,28 @@ watch(productQty, (val) => {
 });
 
 const openInvoiceModal = () => {
+    if (!validateProjectBeforeOutput()) return;
     showInvoice.value = true;
 };
 
 const copyQuote = async () => {
-    // Автосохранение при копировании, если есть права
-    if (canViewHistory.value) { triggerAutoSave().then(saved => { showToast(saved ? 'Скопировано и сохранено' : 'Скопировано'); }); } 
-    else { showToast('Скопировано'); }
-
     const date = new Date().toLocaleDateString('ru-RU');
     let t = `КОММЕРЧЕСКОЕ ПРЕДЛОЖЕНИЕ\nДата: ${date}\n\n`;
     if(project.value.name) t += `Проект: ${project.value.name}\n`;
     t += `Количество изделий: ${productQty.value}\n`;
     t += `ИТОГО К ОПЛАТЕ: ${totalForAll.value.toLocaleString()} ₽`;
-    navigator.clipboard.writeText(t);
+
+    try {
+        await navigator.clipboard.writeText(t);
+        if (canViewHistory.value) {
+            const saved = await triggerAutoSave();
+            showToast(saved ? 'Скопировано и сохранено' : 'Скопировано');
+        } else {
+            showToast('Скопировано');
+        }
+    } catch (error) {
+        showToast('Не удалось скопировать');
+    }
 };
 
 const onInvoicePrint = () => { if(canViewHistory.value) triggerAutoSave(); };

@@ -137,8 +137,8 @@ const modules = [
 const adminModulesData = [
     {
         id: 'trash',
-        name: 'Архив удалённых данных',
-        desc: 'Восстановление, контроль и автоматическая очистка удалённых элементов',
+        name: 'Корзина удалённых данных',
+        desc: 'Восстановление, контроль сроков хранения и удаление записей навсегда',
         action: () => openModule({ id: 'trash', active: true, route: '/settings/trash' }),
         iconType: 'trash',
         category: 'admin',
