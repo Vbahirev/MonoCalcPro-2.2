@@ -3,14 +3,15 @@ import { computed, ref } from 'vue';
 
 const props = defineProps({
     totals: { type: Object, required: true },
-    costRevealed: { type: Boolean, default: false }
+    costRevealed: { type: Boolean, default: false },
+    segmentConfig: { type: Array, default: null }
 });
 const emit = defineEmits(['toggle-cost-visibility']);
 
 const hoveredSegment = ref(null);
 
 // МОНОХРОМНАЯ ПАЛИТРА
-const categories = [
+const defaultCategories = [
     { key: 'costLayers', fallbackKey: 'layers', bg: 'bg-black dark:bg-zinc-100', label: 'Материалы' },
     { key: 'costProcessing', fallbackKey: 'processing', bg: 'bg-zinc-600 dark:bg-zinc-200', label: 'Пост-обработка' },
     { key: 'costAccessories', fallbackKey: 'accessories', bg: 'bg-zinc-400 dark:bg-zinc-300', label: 'Аксессуары' },
@@ -18,8 +19,15 @@ const categories = [
     { key: 'costDesign', fallbackKey: 'design', bg: 'bg-zinc-200 dark:bg-zinc-500', label: 'Дизайн' }
 ];
 
+const categories = computed(() => {
+    if (Array.isArray(props.segmentConfig) && props.segmentConfig.length) {
+        return props.segmentConfig;
+    }
+    return defaultCategories;
+});
+
 const chartData = computed(() => {
-    const data = categories.map(cat => ({
+    const data = categories.value.map(cat => ({
         ...cat,
         value: Number(props.totals?.[cat.key] ?? props.totals?.[cat.fallbackKey] ?? 0) || 0
     })).filter(item => item.value > 0);
@@ -47,7 +55,7 @@ const chartData = computed(() => {
 const totalSum = computed(() => {
     const fromTotals = Number(props.totals?.costTotal);
     if (Number.isFinite(fromTotals) && fromTotals > 0) return fromTotals;
-    return categories.reduce((sum, cat) => sum + (Number(props.totals?.[cat.key] ?? props.totals?.[cat.fallbackKey] ?? 0) || 0), 0);
+    return categories.value.reduce((sum, cat) => sum + (Number(props.totals?.[cat.key] ?? props.totals?.[cat.fallbackKey] ?? 0) || 0), 0);
 });
 </script>
 

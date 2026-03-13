@@ -13,42 +13,69 @@ export function buildInvoicePayload({
   coatings,
   dtf,
 }) {
+  const safeProductQty = Math.max(1, Number(productQty) || 1);
+
   if (calculatorId === 'dtf') {
     const pricePerCm2 = Math.max(0, Number(dtf?.pricePerCm2) || 0);
-    const label = dtf?.label || 'DTF Печать';
+    const label = dtf?.label || 'Нанесение на текстиль';
     const sourceLayers = Array.isArray(layers) ? layers : [];
     const sourcePackaging = Array.isArray(packaging) ? packaging : [];
-    const totalProcessing = sourceLayers.reduce((sum, layer) => {
-      const width = Math.max(0, Number(layer?.w) || 0);
-      const height = Math.max(0, Number(layer?.h) || 0);
-      const qty = Math.max(1, Number(layer?.qty) || 1);
-      return sum + (((width * height) / 100) * pricePerCm2 * qty);
+    const getLayerCost = typeof dtf?.getLayerCost === 'function'
+      ? dtf.getLayerCost
+      : (layer) => {
+          const width = Math.max(0, Number(layer?.w) || 0);
+          const height = Math.max(0, Number(layer?.h) || 0);
+          const qty = Math.max(1, Number(layer?.qty) || 1);
+          return ((width * height) / 100) * pricePerCm2 * qty;
+        };
+    const getEffectivePricePerCm2 = typeof dtf?.getEffectivePricePerCm2 === 'function'
+      ? dtf.getEffectivePricePerCm2
+      : () => pricePerCm2;
+    const totalLayers = sourceLayers.reduce((sum, layer) => {
+      return sum + Math.max(0, Number(getLayerCost(layer)) || 0);
     }, 0);
+    const totalOrder = Math.max(0, Math.round(Number(totals?.totalOrder ?? totals?.total) || 0));
+    const totalPerUnit = Math.max(0, Math.round(Number(totals?.totalPerUnit) || (safeProductQty > 0 ? totalOrder / safeProductQty : 0)));
+    const garment = dtf?.garment && typeof dtf.garment === 'object' ? { ...dtf.garment } : null;
 
     return {
-      project,
-      productQty,
-      layers: [],
-      processing: sourceLayers.map((layer, index) => ({
-        id: `dtf-processing-${layer?.id ?? index}-${index}`,
-        name: sourceLayers.length > 1
-          ? `${label} · ${layer?.name || `Деталь ${index + 1}`}`
-          : label,
-        type: 'area_cm2',
+      project: {
+        ...(project || {}),
+        invoiceMeta: {
+          calculator: 'dtf',
+          garment,
+        },
+      },
+      productQty: safeProductQty,
+      layers: sourceLayers.map((layer, index) => ({
+        id: `dtf-layer-${layer?.id ?? index}-${index}`,
+        name: layer?.name || (sourceLayers.length > 1 ? `Деталь ${index + 1}` : label),
         qty: Math.max(1, Number(layer?.qty) || 1),
         w: Math.max(0, Number(layer?.w) || 0),
         h: Math.max(0, Number(layer?.h) || 0),
-        sides: 1,
-        price: pricePerCm2,
+        area: Math.max(0, Number(layer?.area) || 0),
+        total: Math.max(0, Number(getLayerCost(layer)) || 0) * safeProductQty,
+        unitPrice: Math.max(0, Number(getEffectivePricePerCm2(layer)) || 0),
+        invoiceMeta: {
+          calculator: 'dtf',
+          label,
+          tech: layer?.tech || '',
+          ...(typeof dtf?.getLayerMeta === 'function' ? dtf.getLayerMeta(layer) : {}),
+        },
       })),
+      processing: [],
       accessories: [],
-      packaging: sourcePackaging.filter((item) => item?.dbId).map((item) => ({ ...item })),
+      packaging: sourcePackaging.map((item) => ({ ...item })),
       design: [],
       totals: {
         ...(totals || {}),
-        layers: 0,
-        costLayers: 0,
-        processing: totalProcessing,
+        qty: safeProductQty,
+        totalPerUnit,
+        totalOrder,
+        total: totalOrder,
+        layers: Number(totals?.layers ?? totalLayers),
+        costLayers: Number(totals?.costLayers ?? totals?.layers ?? totalLayers),
+        processing: 0,
         accessories: 0,
         design: 0,
       },
@@ -65,15 +92,24 @@ export function buildInvoicePayload({
     };
   }
 
+  const totalPerUnit = Math.max(0, Math.round(Number(totals?.totalPerUnit ?? totals?.total) || 0));
+  const totalOrder = Math.max(0, Math.round(Number(totals?.totalOrder) || (totalPerUnit * safeProductQty)));
+
   return {
     project,
-    productQty,
+    productQty: safeProductQty,
     layers: Array.isArray(layers) ? layers : [],
     processing: Array.isArray(processing) ? processing : [],
     accessories: Array.isArray(accessories) ? accessories : [],
     packaging: Array.isArray(packaging) ? packaging : [],
     design: Array.isArray(design) ? design : [],
-    totals: totals || {},
+    totals: {
+      ...(totals || {}),
+      qty: safeProductQty,
+      totalPerUnit,
+      totalOrder,
+      total: totalPerUnit,
+    },
     settings: settings || {},
     materials: Array.isArray(materials) ? materials : [],
     coatings: Array.isArray(coatings) ? coatings : [],

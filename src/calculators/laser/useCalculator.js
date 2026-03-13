@@ -65,6 +65,7 @@ const hasNumericInput = (value) => {
     return Number.isFinite(toNum(value, NaN));
 };
 const usesValueField = (type) => type === 'fixed' || type === 'percent';
+const DELETE_UNDO_TOAST_DURATION = 5000;
 const normalizeSides = (value) => {
     const parsed = Math.round(toNum(value, 1));
     return parsed >= 2 ? 2 : 1;
@@ -86,14 +87,16 @@ function createState() {
         accessories: ref([]),
         packaging: ref([]),
         design: ref([]),
+        toast: ref({ show: false, message: '', actionLabel: '', onAction: null }),
         currentProjectId: ref(null),
         autoSaveCounter: ref(parseInt(localStorage.getItem('monocalc_autosave_counter')) || 1),
     };
 }
 
 export function useLaserCalculator() {
-    const { project, layers, processing, accessories, packaging, design, currentProjectId, autoSaveCounter } = createState();
+    const { project, layers, processing, accessories, packaging, design, toast, currentProjectId, autoSaveCounter } = createState();
     let skipNextAutoSaveAfterReset = false;
+    let toastTimer = null;
 
     const tabId = getTabId();
     const storage = getPreferredStorage();
@@ -204,14 +207,71 @@ watch(project, () => {
     const addPackaging = () => addItem(packaging, 'pieces', packagingDB, `Упаковка ${packaging.value.length + 1}`, false);
     const addDesign = () => addItem(design, 'fixed', designDB, `Дизайн ${design.value.length + 1}`, false);
 
+    const clonePlain = (value) => JSON.parse(JSON.stringify(value));
+
+    const hideToast = () => {
+        if (toastTimer) {
+            clearTimeout(toastTimer);
+            toastTimer = null;
+        }
+        toast.value = { show: false, message: '', actionLabel: '', onAction: null };
+    };
+
+    const showToast = (message, options = {}) => {
+        const { actionLabel = '', onAction = null, duration = actionLabel ? DELETE_UNDO_TOAST_DURATION : 3000 } = options;
+        if (toastTimer) {
+            clearTimeout(toastTimer);
+            toastTimer = null;
+        }
+        toast.value = { show: true, message, actionLabel, onAction };
+        if (duration > 0) {
+            toastTimer = window.setTimeout(() => {
+                hideToast();
+            }, duration);
+        }
+    };
+
+    const runToastAction = () => {
+        const action = toast.value?.onAction;
+        hideToast();
+        if (typeof action === 'function') action();
+    };
+
+    const removeFromListWithUndo = (listRef, id, { message, undoMessage }) => {
+        const currentList = Array.isArray(listRef.value) ? listRef.value : [];
+        const index = currentList.findIndex((item) => item?.id === id);
+        if (index < 0) return;
+
+        const removedItem = clonePlain(currentList[index]);
+        listRef.value = currentList.filter((item) => item?.id !== id);
+
+        showToast(message, {
+            actionLabel: 'Отмена',
+            duration: DELETE_UNDO_TOAST_DURATION,
+            onAction: () => {
+                const nextList = Array.isArray(listRef.value) ? [...listRef.value] : [];
+                const restoreIndex = Math.max(0, Math.min(index, nextList.length));
+                nextList.splice(restoreIndex, 0, removedItem);
+                listRef.value = nextList;
+                showToast(undoMessage);
+            },
+        });
+    };
+
     // --- ФУНКЦИИ УДАЛЕНИЯ ---
-    const removeLayer = (id) => layers.value = layers.value.filter(x => x.id !== id);
-    const removeItem = (listRef, id) => listRef.value = listRef.value.filter(x => x.id !== id);
+    const removeLayer = (id) => removeFromListWithUndo(layers, id, {
+        message: 'Деталь удалена',
+        undoMessage: 'Удаление детали отменено',
+    });
+    const removeItem = (listRef, id, message, undoMessage) => removeFromListWithUndo(listRef, id, {
+        message,
+        undoMessage,
+    });
     
-    const removeProcessing = (id) => removeItem(processing, id);
-    const removeAccessory = (id) => removeItem(accessories, id);
-    const removePackaging = (id) => removeItem(packaging, id);
-    const removeDesign = (id) => removeItem(design, id);
+    const removeProcessing = (id) => removeItem(processing, id, 'Услуга удалена', 'Удаление услуги отменено');
+    const removeAccessory = (id) => removeItem(accessories, id, 'Товар удалён', 'Удаление товара отменено');
+    const removePackaging = (id) => removeItem(packaging, id, 'Упаковка удалена', 'Удаление упаковки отменено');
+    const removeDesign = (id) => removeItem(design, id, 'Макет удалён', 'Удаление макета отменено');
 
     // --- ИНИЦИАЛИЗАЦИЯ ---
     const init = async () => {
@@ -747,6 +807,7 @@ const deleteFromTrashForever = async (id) => {
     return {
         materials, materialGroups, coatings, 
         processingDB, accessoriesDB, packagingDB, designDB, settings, 
+        toast,
         
         project, layers, processing, accessories, packaging, design,
         totals, materialConsumption,
@@ -766,6 +827,8 @@ const deleteFromTrashForever = async (id) => {
         hasPermission,
 
         deleteFromHistory,
-        triggerAutoSave
+        triggerAutoSave,
+        showToast,
+        runToastAction
     };
 }

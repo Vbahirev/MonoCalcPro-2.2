@@ -29,6 +29,7 @@ const {
     layers, processing, accessories, packaging, design, project,
     materials, materialGroups, 
     coatings, processingDB, accessoriesDB, packagingDB, designDB,
+    toast,
     totals, materialConsumption: matConsumption,
     resetAll, syncStatus,
     addLayer, removeLayer, 
@@ -37,7 +38,9 @@ const {
     addPackaging, removePackaging,
     addDesign, removeDesign,
     saveToHistory,
-    triggerAutoSave 
+    triggerAutoSave,
+    showToast,
+    runToastAction
 } = useCalculator(typeof props.calculatorId === 'object' ? props.calculatorId.value : props.calculatorId);
 
 const showSaveProjectModal = ref(false);
@@ -48,7 +51,6 @@ const showAuthModal = ref(false); // <--- Для окна входа
 const isManualSaving = ref(false);
 const saveModalNotice = ref(null);
 const activeTab = ref('layers');
-const toast = ref({ show: false, message: '' });
 const isCostVisible = ref(false);
 const showScrollTop = ref(false);
 const saveFireworks = ref([]);
@@ -133,8 +135,7 @@ const statusConfig = computed(() => {
 });
 
 const showOfflineToast = () => {
-    toast.value = { show: true, message: 'Офлайн: раздел временно недоступен' };
-    setTimeout(() => { toast.value.show = false; }, 2500);
+    showToast('Офлайн: раздел временно недоступен', { duration: 2500 });
 };
 
 const blockCloudAction = (action) => {
@@ -164,21 +165,18 @@ const goBackToHome = () => { router.push('/'); };
 
 const onLoginSuccess = () => {
     showAuthModal.value = false;
-    toast.value = { show: true, message: 'Вы успешно вошли' };
-    setTimeout(() => toast.value.show = false, 3000);
+    showToast('Вы успешно вошли');
 };
 
 const openSaveProjectModal = () => {
     blockCloudAction(() => {
         if (!currentUser.value) {
             showAuthModal.value = true;
-            toast.value = { show: true, message: 'Сначала войдите в аккаунт' };
-            setTimeout(() => { toast.value.show = false; }, 2500);
+            showToast('Сначала войдите в аккаунт', { duration: 2500 });
             return;
         }
         if (!canViewHistory.value) {
-            toast.value = { show: true, message: 'Нет прав для сохранения в историю' };
-            setTimeout(() => { toast.value.show = false; }, 2500);
+            showToast('Нет прав для сохранения в историю', { duration: 2500 });
             return;
         }
         saveModalNotice.value = isOfflineMode.value
@@ -190,8 +188,7 @@ const openSaveProjectModal = () => {
 
 const handleManualSaveToHistory = async () => {
     if (!canViewHistory.value) {
-        toast.value = { show: true, message: 'Нет прав для сохранения в историю' };
-        setTimeout(() => { toast.value.show = false; }, 2500);
+        showToast('Нет прав для сохранения в историю', { duration: 2500 });
         return;
     }
 
@@ -204,7 +201,7 @@ const handleManualSaveToHistory = async () => {
         triggerSaveFireworks();
         if (result?.status === 'queued') {
             saveModalNotice.value = { type: 'success', text: 'Сохранено в кэш. Синхронизация выполнится автоматически при подключении к сети.' };
-            toast.value = { show: true, message: 'Офлайн: сохранено в кэш, синхронизация после подключения' };
+            showToast('Офлайн: сохранено в кэш, синхронизация после подключения');
             setTimeout(() => {
                 showSaveProjectModal.value = false;
                 saveModalNotice.value = null;
@@ -212,12 +209,10 @@ const handleManualSaveToHistory = async () => {
         } else {
             showSaveProjectModal.value = false;
             saveModalNotice.value = null;
-            toast.value = { show: true, message: 'Проект сохранён в Историю' };
+            showToast('Проект сохранён в Историю');
         }
-        setTimeout(() => { toast.value.show = false; }, 3000);
     } catch (e) {
-        toast.value = { show: true, message: e?.message || 'Ошибка сохранения' };
-        setTimeout(() => { toast.value.show = false; }, 3000);
+        showToast(e?.message || 'Ошибка сохранения');
     } finally {
         isManualSaving.value = false;
     }
@@ -490,8 +485,8 @@ const openInvoiceModal = () => {
 
 const copyQuote = async () => {
     // Автосохранение при копировании, если есть права
-    if (canViewHistory.value) { triggerAutoSave().then(saved => { toast.value = { show: true, message: saved ? 'Скопировано и сохранено' : 'Скопировано' }; setTimeout(() => { toast.value.show = false; }, 3000); }); } 
-    else { toast.value = { show: true, message: 'Скопировано' }; setTimeout(() => { toast.value.show = false; }, 3000); }
+    if (canViewHistory.value) { triggerAutoSave().then(saved => { showToast(saved ? 'Скопировано и сохранено' : 'Скопировано'); }); } 
+    else { showToast('Скопировано'); }
 
     const date = new Date().toLocaleDateString('ru-RU');
     let t = `КОММЕРЧЕСКОЕ ПРЕДЛОЖЕНИЕ\nДата: ${date}\n\n`;
@@ -503,7 +498,7 @@ const copyQuote = async () => {
 
 const onInvoicePrint = () => { if(canViewHistory.value) triggerAutoSave(); };
 const requestReset = () => { showResetConfirm.value = true; };
-const confirmReset = () => { resetAll(); productQty.value = 1; showResetConfirm.value = false; toast.value = { show: true, message: 'Проект очищен' }; setTimeout(() => { toast.value.show = false; }, 3000); };
+const confirmReset = () => { resetAll(); productQty.value = 1; showResetConfirm.value = false; showToast('Проект очищен'); };
 </script>
 
 <template>
@@ -923,7 +918,8 @@ const confirmReset = () => { resetAll(); productQty.value = 1; showResetConfirm.
                         <div class="flex items-center justify-between"><div class="flex flex-col"><span class="text-[10px] uppercase font-bold text-gray-500">Наценка</span><span v-if="totals.markupRub > 0" class="text-[10px] font-bold text-green-600">+{{ totals.markupRub.toLocaleString() }} ₽</span></div><div class="flex items-center bg-white rounded-lg border border-gray-200 h-8 shadow-sm"><button @click="changeMarkup(-5)" class="w-8 h-full flex items-center justify-center text-gray-400 hover:text-black hover:bg-gray-50 rounded-l-lg transition-colors font-bold">-</button><span class="kp-percent-value w-10 text-center text-xs font-bold border-x border-gray-100 leading-8">{{ project.markup }}%</span><button @click="changeMarkup(5)" class="w-8 h-full flex items-center justify-center text-gray-400 hover:text-black hover:bg-gray-50 rounded-r-lg transition-colors font-bold">+</button></div></div>
                         <div class="flex items-center justify-between"><div class="flex flex-col"><span class="text-[10px] uppercase font-bold text-gray-500">Скидка</span><span v-if="totals.discountRub > 0" class="text-[10px] font-bold text-red-500">-{{ totals.discountRub.toLocaleString() }} ₽</span></div><div class="flex items-center bg-white rounded-lg border border-gray-200 h-8 shadow-sm"><button @click="changeDiscount(-5)" class="w-8 h-full flex items-center justify-center text-gray-400 hover:text-black hover:bg-gray-50 rounded-l-lg transition-colors font-bold">-</button><span class="kp-percent-value w-10 text-center text-xs font-bold border-x border-gray-100 leading-8">{{ project.discount }}%</span><button @click="changeDiscount(5)" class="w-8 h-full flex items-center justify-center text-gray-400 hover:text-black hover:bg-gray-50 rounded-r-lg transition-colors font-bold">+</button></div></div>
                         <div class="pt-3 mt-1 border-t border-gray-200">
-                            <div class="flex items-center justify-between"><div class="flex flex-col"><span class="text-[10px] uppercase font-bold text-gray-500">Количество изделий</span><span class="text-[10px] font-bold text-gray-500">{{ productQty }} шт</span></div><div class="flex items-center bg-white rounded-lg border border-gray-200 h-8 shadow-sm"><button @click="changeProductQty(-1)" class="w-8 h-full flex items-center justify-center text-gray-400 hover:text-black hover:bg-gray-50 rounded-l-lg transition-colors font-bold">-</button><input type="number" min="1" v-model.number="productQty" @focus="moveCaretToEnd" class="w-12 h-full text-center text-xs font-bold border-x border-gray-100 bg-transparent outline-none" /><button @click="changeProductQty(1)" class="w-8 h-full flex items-center justify-center text-gray-400 hover:text-black hover:bg-gray-50 rounded-r-lg transition-colors font-bold">+</button></div></div>
+                            <div class="flex items-center justify-between"><div class="flex flex-col"><span class="text-[10px] uppercase font-bold text-gray-500">Тираж заказа</span><span class="text-[10px] font-bold text-gray-500">{{ productQty }} шт</span></div><div class="flex items-center bg-white rounded-lg border border-gray-200 h-8 shadow-sm"><button @click="changeProductQty(-1)" class="w-8 h-full flex items-center justify-center text-gray-400 hover:text-black hover:bg-gray-50 rounded-l-lg transition-colors font-bold">-</button><input type="number" min="1" v-model.number="productQty" @focus="moveCaretToEnd" class="w-12 h-full text-center text-xs font-bold border-x border-gray-100 bg-transparent outline-none" /><button @click="changeProductQty(1)" class="w-8 h-full flex items-center justify-center text-gray-400 hover:text-black hover:bg-gray-50 rounded-r-lg transition-colors font-bold">+</button></div></div>
+                            <p class="mt-2 max-w-[220px] text-[10px] font-semibold leading-snug text-gray-400 dark:text-gray-500">Умножает весь заказ целиком. Количества в карточках считаются внутри одной единицы заказа.</p>
                         </div>
                     </div>
 
@@ -1000,7 +996,7 @@ const confirmReset = () => { resetAll(); productQty.value = 1; showResetConfirm.
 
     <InvoiceModal :show="showInvoice" :project="invoicePayload.project" :layers="invoicePayload.layers" :processing="invoicePayload.processing" :accessories="invoicePayload.accessories" :packaging="invoicePayload.packaging" :design="invoicePayload.design" :totals="invoicePayload.totals" :settings="invoicePayload.settings" :materials="invoicePayload.materials" :coatings="invoicePayload.coatings" :product-qty="invoicePayload.productQty" @close="showInvoice = false" @print="onInvoicePrint" />
 
-    <Transition name="toast"><div v-if="toast.show" class="fixed top-6 left-1/2 -translate-x-1/2 z-[110] px-6 py-3 rounded-xl shadow-2xl flex items-center gap-3 border border-white/20 backdrop-blur-md transition-all bg-[#18181B]/90 text-white"><span class="font-bold text-xs uppercase tracking-wide">{{ toast.message }}</span></div></Transition>
+    <Transition name="toast"><div v-if="toast.show" class="fixed top-6 left-1/2 -translate-x-1/2 z-[110] px-6 py-3 rounded-xl shadow-2xl flex items-center gap-3 border border-white/20 backdrop-blur-md transition-all bg-[#18181B]/90 text-white"><span class="font-bold text-xs uppercase tracking-wide">{{ toast.message }}</span><button v-if="toast.actionLabel" @click="runToastAction" class="rounded-full border border-white/20 px-3 py-1 text-[10px] font-black uppercase tracking-widest text-white transition-colors hover:bg-white/10">{{ toast.actionLabel }}</button></div></Transition>
 
     <div class="fixed top-7 left-1/2 -translate-x-1/2 pointer-events-none z-[120] no-print" aria-hidden="true">
         <div class="save-fireworks-stage">

@@ -164,7 +164,7 @@ const tags = computed(() => {
         if (!m.category) return;
         if (!map.has(m.category)) map.set(m.category, m.category);
     });
-    const labelMap = { laser: 'Лазерная резка', printing: 'Полиграфия', textile: 'Текстиль', dtf: 'DTF Печать' };
+    const labelMap = { laser: 'Лазерная резка', printing: 'Полиграфия', textile: 'Текстиль', dtf: 'Нанесение на текстиль' };
     return base.concat([...map.keys()].map(id => ({ id, label: labelMap[id] || id })));
 });
 

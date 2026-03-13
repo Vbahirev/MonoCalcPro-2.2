@@ -52,8 +52,16 @@ const stampImageDataUrl = ref('');
 const stampOffsetX = ref(0);
 const stampOffsetY = ref(0);
 const stampScale = ref(1);
+const signatureEnabled = ref(false);
+const signatureImageDataUrl = ref('');
+const signatureOffsetX = ref(0);
+const signatureOffsetY = ref(0);
+const signatureScale = ref(1);
+const prefsExpanded = ref(false);
+const stampControlsExpanded = ref(false);
+const signatureControlsExpanded = ref(false);
 const { userRole, hasPermission, processingDB, accessoriesDB, packagingDB, designDB } = useDatabase();
-const canManageStampAsset = computed(() => {
+const canManageInvoiceAssets = computed(() => {
     const role = String(userRole.value || '').toLowerCase();
     if (role === 'superadmin') return true;
     return hasPermission('invoice.stamp.edit');
@@ -70,6 +78,12 @@ const loadPrintPrefs = () => {
         stampOffsetY.value = Number.isFinite(Number(parsed.stampOffsetY)) ? Number(parsed.stampOffsetY) : 0;
         const scale = Number(parsed.stampScale);
         stampScale.value = Number.isFinite(scale) ? Math.max(0.3, Math.min(2.5, scale)) : 1;
+        signatureEnabled.value = Boolean(parsed.signatureEnabled);
+        signatureImageDataUrl.value = typeof parsed.signatureImageDataUrl === 'string' ? parsed.signatureImageDataUrl : '';
+        signatureOffsetX.value = Number.isFinite(Number(parsed.signatureOffsetX)) ? Number(parsed.signatureOffsetX) : 0;
+        signatureOffsetY.value = Number.isFinite(Number(parsed.signatureOffsetY)) ? Number(parsed.signatureOffsetY) : 0;
+        const signatureScaleValue = Number(parsed.signatureScale);
+        signatureScale.value = Number.isFinite(signatureScaleValue) ? Math.max(0.5, Math.min(2, signatureScaleValue)) : 1;
     } catch (e) {}
 };
 
@@ -80,12 +94,16 @@ const savePrintPrefs = () => {
             stampOffsetX: Number(stampOffsetX.value) || 0,
             stampOffsetY: Number(stampOffsetY.value) || 0,
             stampScale: Number(stampScale.value) || 1,
+            signatureEnabled: Boolean(signatureEnabled.value),
+            signatureImageDataUrl: signatureImageDataUrl.value || '',
+            signatureOffsetX: Number(signatureOffsetX.value) || 0,
+            signatureOffsetY: Number(signatureOffsetY.value) || 0,
+            signatureScale: Number(signatureScale.value) || 1,
         }));
     } catch (e) {}
 };
 
-const handleStampUpload = (event) => {
-    if (!canManageStampAsset.value) return;
+const readPngAsset = (event, onLoad) => {
     const file = event?.target?.files?.[0];
     if (!file) return;
     if (!String(file.type || '').includes('png')) {
@@ -94,11 +112,26 @@ const handleStampUpload = (event) => {
     }
     const reader = new FileReader();
     reader.onload = () => {
-        stampImageDataUrl.value = typeof reader.result === 'string' ? reader.result : '';
+        onLoad(typeof reader.result === 'string' ? reader.result : '');
         savePrintPrefs();
     };
     reader.readAsDataURL(file);
     event.target.value = '';
+};
+
+const handleStampUpload = (event) => {
+    if (!canManageInvoiceAssets.value) return;
+    readPngAsset(event, (value) => {
+        stampImageDataUrl.value = value;
+    });
+};
+
+const handleSignatureUpload = (event) => {
+    if (!canManageInvoiceAssets.value) return;
+    readPngAsset(event, (value) => {
+        signatureImageDataUrl.value = value;
+        signatureEnabled.value = true;
+    });
 };
 
 const clearStamp = () => {
@@ -106,10 +139,37 @@ const clearStamp = () => {
     savePrintPrefs();
 };
 
+const clearSignature = () => {
+    signatureImageDataUrl.value = '';
+    signatureEnabled.value = false;
+    savePrintPrefs();
+};
+
 const showStampOnPrint = computed(() => stampEnabled.value && !!stampImageDataUrl.value);
 const stampStyle = computed(() => ({
     transform: `translate(${Number(stampOffsetX.value) || 0}px, ${Number(stampOffsetY.value) || 0}px) scale(${Number(stampScale.value) || 1})`
 }));
+const showSignatureOnPrint = computed(() => signatureEnabled.value && !!signatureImageDataUrl.value);
+const signatureStyle = computed(() => ({
+    transform: `translate(${Number(signatureOffsetX.value) || 0}px, ${Number(signatureOffsetY.value) || 0}px) scale(${Number(signatureScale.value) || 1})`,
+}));
+const isDtfInvoice = computed(() => (
+    props?.project?.invoiceMeta?.calculator === 'dtf'
+    || (Array.isArray(props.layers) && props.layers.some((layer) => layer?.invoiceMeta?.calculator === 'dtf'))
+));
+const dtfGarmentMeta = computed(() => props?.project?.invoiceMeta?.garment || null);
+const dtfGarmentSizeItems = computed(() => {
+    const items = Array.isArray(dtfGarmentMeta.value?.sizeBreakdownItems)
+        ? dtfGarmentMeta.value.sizeBreakdownItems
+        : [];
+
+    return items
+        .map((item) => ({
+            size: String(item?.key || '').trim(),
+            qty: Math.max(0, Number(item?.qty) || 0),
+        }))
+        .filter((item) => item.size && item.qty > 0);
+});
 
 watch(() => props.show, (newVal) => {
     if (newVal) {
@@ -120,14 +180,20 @@ watch(() => props.show, (newVal) => {
         loadPrintPrefs();
         stampEnabled.value = true;
         managerName.value = '';
+        prefsExpanded.value = false;
+        stampControlsExpanded.value = false;
+        signatureControlsExpanded.value = false;
     }
 });
 
-watch([stampEnabled, stampImageDataUrl, stampOffsetX, stampOffsetY, stampScale], () => {
+watch([stampEnabled, stampImageDataUrl, stampOffsetX, stampOffsetY, stampScale, signatureEnabled, signatureImageDataUrl, signatureOffsetX, signatureOffsetY, signatureScale], () => {
     savePrintPrefs();
 });
 
 const calculateLayerPrice = (layer) => {
+    const explicitTotal = toMoneyNum(layer?.total ?? layer?.lineTotal);
+    if (explicitTotal > 0) return explicitTotal;
+
     if (!props.materials || !props.settings) return 0;
     
     const m = props.materials.find(x => x.id === layer.matId) || props.materials[0];
@@ -186,7 +252,130 @@ const calculateLayerPrice = (layer) => {
     return (matCost + cutCost + engrCost + finishCost) * qty;
 };
 
+const formatLaserLayerDescription = (layer) => {
+    const descParts = [];
+    const materialName = props.materials.find((item) => item?.id === layer?.matId)?.name;
+    const finishingName = props.coatings.find((item) => item?.id === layer?.finishing)?.name;
+
+    if (materialName) descParts.push(materialName);
+    if (layer?.w && layer?.h) descParts.push(`${layer.w}x${layer.h} мм`);
+    if (layer?.area) descParts.push(`${layer.area} см²`);
+    if (Number(layer?.cut) > 0) descParts.push(`Рез: ${Math.round(Number(layer.cut))} мм`);
+    if (finishingName && layer?.finishing !== 'none') {
+        descParts.push(layer?.finishingBothSides ? `${finishingName}, 2 стороны` : finishingName);
+    }
+    if (layer?.hasEngraving) {
+        const engravingW = Number(layer?.engravingW_mm) || 0;
+        const engravingH = Number(layer?.engravingH_mm) || 0;
+        if (engravingW > 0 && engravingH > 0) descParts.push(`Гравировка ${engravingW}x${engravingH} мм`);
+        else descParts.push('Гравировка');
+    }
+
+    return descParts.join(' • ');
+};
+
 const allItems = computed(() => {
+    if (isDtfInvoice.value) {
+        const list = [];
+        let idx = 1;
+        const garment = dtfGarmentMeta.value;
+        const garmentUnitPrice = Math.max(0, toMoneyNum(garment?.unitPrice));
+
+        if (garment?.label) {
+            if (dtfGarmentSizeItems.value.length) {
+                dtfGarmentSizeItems.value.forEach((item) => {
+                    list.push({
+                        id: idx++,
+                        name: `${garment.label} ${item.size}`,
+                        desc: 'Текстильная заготовка',
+                        category: 'Изделие',
+                        qty: item.qty,
+                        total: garmentUnitPrice * item.qty,
+                    });
+                });
+            } else {
+                list.push({
+                    id: idx++,
+                    name: garment.label,
+                    desc: garment?.sizeBreakdown
+                        ? `Размеры: ${garment.sizeBreakdown}`
+                        : `Тираж заказа: ${safeProductQty.value} шт`,
+                    category: 'Изделие',
+                    qty: safeProductQty.value,
+                    total: toMoneyNum(garment?.total),
+                });
+            }
+        }
+
+        (props.layers || []).forEach((layer) => {
+            const total = calculateLayerPrice(layer);
+            if (total <= 0) return;
+
+            const meta = layer?.invoiceMeta || {};
+            const descParts = [];
+            if (meta?.techLabel) descParts.push(meta.techLabel);
+            if (meta?.sublimationLabel) descParts.push(meta.sublimationLabel);
+            else if (meta?.placementLabel) descParts.push(meta.placementLabel);
+            if (meta?.flexMaterialLabel && layer?.tech === 'flex') descParts.push(meta.flexMaterialLabel);
+            if (layer?.w && layer?.h && layer?.tech !== 'sublimation') descParts.push(`${layer.w}x${layer.h} мм`);
+            if (meta?.qtyPerProduct) descParts.push(`${meta.qtyPerProduct} шт/изделие`);
+
+            list.push({
+                id: idx++,
+                name: layer?.name || 'Нанесение',
+                desc: descParts.join(' • '),
+                category: 'Нанесение',
+                qty: Math.max(1, Number(meta?.qtyPerProduct) || Number(layer?.qty) || 1) * safeProductQty.value,
+                total,
+            });
+        });
+
+        (props.packaging || []).forEach((item) => {
+            const perProductQty = Math.max(1, Number(item?.qty) || 1);
+            const price = Math.max(0, toMoneyNum(item?.price));
+            let baseTotal = 0;
+
+            if (price > 0) {
+                if (item?.type === 'roll') {
+                    baseTotal = price * ((Math.max(0, Number(item?.length) || 0) / 1000) * perProductQty);
+                } else if (item?.type === 'box_mm') {
+                    const width = Math.max(0, Number(item?.w) || 0);
+                    const length = Math.max(0, Number(item?.l) || 0);
+                    const height = Math.max(0, Number(item?.h) || 0);
+                    const areaM2 = (2 * ((width * length) + (width * height) + (length * height))) / 1000000;
+                    baseTotal = price * areaM2 * perProductQty;
+                } else {
+                    baseTotal = price * perProductQty;
+                }
+            }
+
+            const total = baseTotal * safeProductQty.value;
+            if (total <= 0) return;
+
+            const width = Number(item?.w) || 0;
+            const length = Number(item?.l) || 0;
+            const height = Number(item?.h) || 0;
+            const runLength = Number(item?.length) || 0;
+            const rollWidth = Number(item?.rollWidthMm || item?.rollWidth) || 0;
+            const desc = item?.type === 'box_mm'
+                ? `Коробка ${width || 0}x${length || 0}x${height || 0} мм • ${perProductQty} шт/изделие`
+                : item?.type === 'roll'
+                    ? `Стрейч ${rollWidth || 0} мм, ${runLength || 0} мм • ${perProductQty} шт/изделие`
+                    : `Упаковка • ${perProductQty} шт/изделие`;
+
+            list.push({
+                id: idx++,
+                name: item?.name || 'Упаковка',
+                desc,
+                category: 'Упаковка',
+                qty: perProductQty * safeProductQty.value,
+                total,
+            });
+        });
+
+        return list;
+    }
+
     const list = [];
     let idx = 1;
 
@@ -194,15 +383,11 @@ const allItems = computed(() => {
         const calculatedTotal = calculateLayerPrice(l);
         if (calculatedTotal <= 0) return;
 
-        const descParts = [];
-        if (l.w && l.h) descParts.push(`${l.w}x${l.h} мм`);
-        if (l.area) descParts.push(`${l.area} см²`);
-        
         list.push({
             id: idx++,
             name: l.name || 'Изделие из листового материала',
-            desc: descParts.join(', '),
-            category: 'Материал',
+            desc: formatLaserLayerDescription(l),
+            category: 'Деталь',
             qty: l.qty,
             total: calculatedTotal
         });
@@ -406,13 +591,27 @@ const projectDiscountPct = computed(() => {
     return Math.min(100, Math.max(0, n));
 });
 
-const markupRubOne = computed(() => Math.round(subTotalOne.value * (projectMarkupPct.value / 100)));
+const payloadPricePerOne = computed(() => {
+    const value = toMoneyNum(props?.totals?.totalPerUnit);
+    return value > 0 ? Math.round(value) : 0;
+});
+
+const payloadTotalForAll = computed(() => {
+    const value = toMoneyNum(props?.totals?.totalOrder);
+    return value > 0 ? Math.round(value) : 0;
+});
+
+const markupRubOne = computed(() => isDtfInvoice.value
+    ? Math.round(toMoneyNum(props?.totals?.markupRub))
+    : Math.round(subTotalOne.value * (projectMarkupPct.value / 100)));
 const beforeDiscountOne = computed(() => subTotalOne.value + markupRubOne.value);
-const discountRubOne = computed(() => Math.round(beforeDiscountOne.value * (projectDiscountPct.value / 100)));
+const discountRubOne = computed(() => isDtfInvoice.value
+    ? Math.round(toMoneyNum(props?.totals?.discountRub))
+    : Math.round(beforeDiscountOne.value * (projectDiscountPct.value / 100)));
 const minimumOrderPriceOne = computed(() => Math.max(0, Math.round(toMoneyNum(props?.settings?.minimumOrderPrice))));
 const calculatedPricePerOne = computed(() => Math.max(0, Math.round(beforeDiscountOne.value - discountRubOne.value)));
-const pricePerOne = computed(() => Math.max(minimumOrderPriceOne.value, calculatedPricePerOne.value));
-const totalForAll = computed(() => Math.round(pricePerOne.value * safeProductQty.value));
+const pricePerOne = computed(() => payloadPricePerOne.value || Math.max(minimumOrderPriceOne.value, calculatedPricePerOne.value));
+const totalForAll = computed(() => payloadTotalForAll.value || Math.round(pricePerOne.value * safeProductQty.value));
 const formatMoney = (value) => new Intl.NumberFormat('ru-RU').format(Math.max(0, Number(value) || 0));
 
 // ИЗМЕНЕНО: Сначала эмитим событие, потом печатаем
@@ -434,36 +633,124 @@ const printInvoice = () => {
             <div class="invoice-actions-track no-print">
                 <div class="invoice-actions-rail">
                     <div class="invoice-actions">
-                        <div class="invoice-print-prefs">
-                            <label class="invoice-prefs-row">
-                                <span>Менеджер</span>
-                                <input v-model="managerName" type="text" placeholder="Кто печатает КП" class="invoice-pref-input">
-                            </label>
-                            <div class="invoice-prefs-row invoice-prefs-row--inline">
-                                <label class="invoice-check">
-                                    <input v-model="stampEnabled" type="checkbox" class="invoice-check-input">
-                                    <span class="invoice-check-toggle" :class="{ 'is-on': stampEnabled }"><span class="invoice-check-knob"></span></span>
-                                    <span>Печатать печать</span>
-                                </label>
-                                <label v-if="canManageStampAsset" class="invoice-upload-btn">
-                                    <input type="file" accept="image/png" @change="handleStampUpload" class="hidden">
-                                    <span>{{ stampImageDataUrl ? 'Заменить PNG' : 'Загрузить PNG' }}</span>
-                                </label>
-                                <button v-if="canManageStampAsset && stampImageDataUrl" @click="clearStamp" class="invoice-clear-btn" type="button">Убрать</button>
-                            </div>
-                            <div v-if="canManageStampAsset && stampImageDataUrl" class="invoice-prefs-row invoice-prefs-sliders">
-                                <label>Смещение X <input v-model.number="stampOffsetX" type="range" min="-220" max="220" step="1"></label>
-                                <label>Смещение Y <input v-model.number="stampOffsetY" type="range" min="-220" max="220" step="1"></label>
-                                <label>Размер <input v-model.number="stampScale" type="range" min="0.3" max="2.5" step="0.01"></label>
-                            </div>
+                        <label class="invoice-manager-surface">
+                            <span class="invoice-manager-surface-label">Менеджер</span>
+                            <input v-model="managerName" type="text" placeholder="Кто печатает КП" class="invoice-pref-input invoice-pref-input--surface">
+                        </label>
+                        <div class="invoice-prefs-stack">
+                            <button
+                                type="button"
+                                class="invoice-prefs-toggle"
+                                :class="{ 'is-open': prefsExpanded }"
+                                @click="prefsExpanded = !prefsExpanded"
+                            >
+                                <span>Параметры КП</span>
+                                <svg class="invoice-prefs-toggle-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                    <polyline points="6 9 12 15 18 9"></polyline>
+                                </svg>
+                            </button>
                         </div>
-                        <button @click="printInvoice" class="bg-white text-black px-5 py-2.5 rounded-xl font-bold text-xs uppercase tracking-wider shadow-lg hover:bg-gray-100 transition-all flex items-center gap-2 active:scale-95">
+                        <button @click="printInvoice" class="invoice-action-btn invoice-action-btn--primary bg-white text-black px-5 py-2.5 rounded-xl font-bold text-xs uppercase tracking-wider shadow-lg hover:bg-gray-100 transition-all flex items-center gap-2 active:scale-95">
                             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 6 2 18 2 18 9"></polyline><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"></path><rect x="6" y="14" width="12" height="8"></rect></svg>
                             Печать / Сохранить PDF
                         </button>
-                        <button @click="$emit('close')" class="bg-white/10 text-white px-5 py-2.5 rounded-xl font-bold text-xs uppercase tracking-wider hover:bg-white/20 transition-all active:scale-95 backdrop-blur-md">
+                        <button @click="$emit('close')" class="invoice-action-btn bg-white/10 text-white px-5 py-2.5 rounded-xl font-bold text-xs uppercase tracking-wider hover:bg-white/20 transition-all active:scale-95 backdrop-blur-md">
                             Закрыть
                         </button>
+                        <transition name="invoice-prefs-panel">
+                            <div v-if="prefsExpanded" class="invoice-print-prefs">
+                                <div class="invoice-prefs-header">
+                                    <div>
+                                        <div class="invoice-prefs-eyebrow">Настройки вывода</div>
+                                        <div class="invoice-prefs-heading">Печать и подпись</div>
+                                    </div>
+                                </div>
+
+                                <div class="invoice-prefs-section">
+                                    <div class="invoice-prefs-section-head">
+                                        <div class="invoice-prefs-section-title">Печать</div>
+                                        <button
+                                            v-if="canManageInvoiceAssets && stampImageDataUrl"
+                                            type="button"
+                                            class="invoice-section-toggle"
+                                            @click="stampControlsExpanded = !stampControlsExpanded"
+                                        >
+                                            {{ stampControlsExpanded ? 'Свернуть' : 'Показать настройки' }}
+                                        </button>
+                                    </div>
+                                    <div class="invoice-prefs-row invoice-prefs-row--inline">
+                                        <label class="invoice-check">
+                                            <input v-model="stampEnabled" type="checkbox" class="invoice-check-input">
+                                            <span class="invoice-check-toggle" :class="{ 'is-on': stampEnabled }"><span class="invoice-check-knob"></span></span>
+                                            <span>Добавить печать</span>
+                                        </label>
+                                        <div v-if="canManageInvoiceAssets" class="invoice-prefs-actions">
+                                            <label class="invoice-upload-btn">
+                                                <input type="file" accept="image/png" @change="handleStampUpload" class="hidden">
+                                                <span>{{ stampImageDataUrl ? 'Заменить PNG' : 'Загрузить PNG' }}</span>
+                                            </label>
+                                            <button v-if="stampImageDataUrl" @click="clearStamp" class="invoice-clear-btn" type="button">Убрать</button>
+                                        </div>
+                                    </div>
+                                    <div v-if="canManageInvoiceAssets && stampImageDataUrl && stampControlsExpanded" class="invoice-prefs-row invoice-prefs-sliders">
+                                        <label>
+                                            <span>Смещение X</span>
+                                            <input v-model.number="stampOffsetX" type="range" min="-220" max="220" step="1" class="invoice-slider">
+                                        </label>
+                                        <label>
+                                            <span>Смещение Y</span>
+                                            <input v-model.number="stampOffsetY" type="range" min="-220" max="220" step="1" class="invoice-slider">
+                                        </label>
+                                        <label>
+                                            <span>Размер</span>
+                                            <input v-model.number="stampScale" type="range" min="0.3" max="2.5" step="0.01" class="invoice-slider">
+                                        </label>
+                                    </div>
+                                </div>
+
+                                <div class="invoice-prefs-section">
+                                    <div class="invoice-prefs-section-head">
+                                        <div class="invoice-prefs-section-title">Подпись</div>
+                                        <button
+                                            v-if="signatureImageDataUrl"
+                                            type="button"
+                                            class="invoice-section-toggle"
+                                            @click="signatureControlsExpanded = !signatureControlsExpanded"
+                                        >
+                                            {{ signatureControlsExpanded ? 'Свернуть' : 'Показать настройки' }}
+                                        </button>
+                                    </div>
+                                    <div class="invoice-prefs-row invoice-prefs-row--inline">
+                                        <label class="invoice-check">
+                                            <input v-model="signatureEnabled" type="checkbox" class="invoice-check-input">
+                                            <span class="invoice-check-toggle" :class="{ 'is-on': signatureEnabled }"><span class="invoice-check-knob"></span></span>
+                                            <span>Добавить подпись</span>
+                                        </label>
+                                        <div v-if="canManageInvoiceAssets" class="invoice-prefs-actions">
+                                            <label class="invoice-upload-btn">
+                                                <input type="file" accept="image/png" @change="handleSignatureUpload" class="hidden">
+                                                <span>{{ signatureImageDataUrl ? 'Заменить PNG' : 'Загрузить PNG' }}</span>
+                                            </label>
+                                            <button v-if="signatureImageDataUrl" @click="clearSignature" class="invoice-clear-btn" type="button">Убрать</button>
+                                        </div>
+                                    </div>
+                                    <div v-if="signatureImageDataUrl && signatureControlsExpanded" class="invoice-prefs-row invoice-prefs-sliders">
+                                        <label>
+                                            <span>Смещение X</span>
+                                            <input v-model.number="signatureOffsetX" type="range" min="-220" max="220" step="1" class="invoice-slider">
+                                        </label>
+                                        <label>
+                                            <span>Смещение Y</span>
+                                            <input v-model.number="signatureOffsetY" type="range" min="-220" max="220" step="1" class="invoice-slider">
+                                        </label>
+                                        <label>
+                                            <span>Размер подписи</span>
+                                            <input v-model.number="signatureScale" type="range" min="0.5" max="2" step="0.01" class="invoice-slider">
+                                        </label>
+                                    </div>
+                                </div>
+                            </div>
+                        </transition>
                     </div>
                 </div>
             </div>
@@ -523,7 +810,7 @@ const printInvoice = () => {
                             <img v-if="showStampOnPrint" :src="stampImageDataUrl" alt="Печать" class="invoice-stamp" :style="stampStyle">
                         </div>
                     </div>
-                    <div class="invoice-footer flex justify-between items-end pt-8 border-t border-gray-200"><div class="text-[10px] text-gray-400 max-w-xs leading-relaxed">Предложение действительно в течение 3 рабочих дней.<br>Не является публичной офертой.</div><div class="text-center"><div class="text-[18px] font-black text-black leading-none min-h-[22px] mb-2">{{ managerName || ' ' }}</div><div class="w-44 h-px bg-gray-400"></div><div class="text-[11px] font-bold uppercase tracking-widest text-gray-400 mt-2">Менеджер</div></div></div>
+                    <div class="invoice-footer flex justify-between items-end pt-8 border-t border-gray-200"><div class="text-[10px] text-gray-400 max-w-xs leading-relaxed">Предложение действительно в течение 3 рабочих дней.<br>Не является публичной офертой.</div><div class="text-center"><div class="invoice-signature-slot"><img v-if="showSignatureOnPrint" :src="signatureImageDataUrl" alt="Подпись" class="invoice-signature" :style="signatureStyle"></div><div class="text-[18px] font-black text-black leading-none min-h-[22px] mb-2">{{ managerName || ' ' }}</div><div class="w-44 h-px bg-gray-400"></div><div class="text-[11px] font-bold uppercase tracking-widest text-gray-400 mt-2">Менеджер</div></div></div>
                 </div>
             </div>
             
@@ -593,68 +880,253 @@ const printInvoice = () => {
     max-width: 210mm;
     margin: 0 auto;
     display: flex;
-    justify-content: flex-end;
+    justify-content: center;
     box-sizing: border-box;
-    padding-right: 10pt;
+    padding-right: 0;
     pointer-events: none;
 }
 
 .invoice-actions {
+    position: relative;
     pointer-events: auto;
     display: flex;
-    align-items: flex-start;
+    align-items: center;
+    justify-content: flex-end;
+    flex-wrap: nowrap;
     gap: 0.75rem;
     padding: 0.45rem;
     border-radius: 0.9rem;
     background: rgba(24, 24, 27, 0.58);
     border: 1px solid rgba(255, 255, 255, 0.14);
     backdrop-filter: blur(10px);
+    width: fit-content;
+    max-width: calc(100vw - 2rem);
+}
+
+.invoice-manager-surface {
+    display: flex;
+    align-items: center;
+    gap: 0.65rem;
+    flex: 0 0 auto;
+    min-width: 0;
+    padding: 0.3rem 0.35rem 0.3rem 0.7rem;
+    border-radius: 0.95rem;
+    border: 1px solid rgba(255, 255, 255, 0.18);
+    background: rgba(255, 255, 255, 0.09);
+    overflow: hidden;
+}
+
+.invoice-manager-surface-label {
+    font-size: 10px;
+    font-weight: 800;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    color: rgba(255, 255, 255, 0.86);
+    white-space: nowrap;
+}
+
+.invoice-prefs-stack {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    flex: 0 0 auto;
+}
+
+.invoice-prefs-toggle {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.55rem;
+    height: 42px;
+    padding: 0 0.95rem;
+    border-radius: 0.95rem;
+    border: 1px solid rgba(255, 255, 255, 0.16);
+    background: rgba(255, 255, 255, 0.08);
+    color: #fff;
+    font-size: 11px;
+    font-weight: 800;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    white-space: nowrap;
+    flex-shrink: 0;
+    transition: background-color 0.2s ease, border-color 0.2s ease, transform 0.2s ease;
+}
+
+.invoice-action-btn {
+    white-space: nowrap;
+    flex-shrink: 0;
+}
+
+.invoice-action-btn--primary {
+    line-height: 1;
+}
+
+.invoice-prefs-toggle:hover {
+    background: rgba(255, 255, 255, 0.14);
+    border-color: rgba(255, 255, 255, 0.24);
+}
+
+.invoice-prefs-toggle.is-open {
+    background: rgba(255, 255, 255, 0.18);
+    border-color: rgba(255, 255, 255, 0.3);
+}
+
+.invoice-prefs-toggle-icon {
+    transition: transform 0.22s ease;
+}
+
+.invoice-prefs-toggle.is-open .invoice-prefs-toggle-icon {
+    transform: rotate(180deg);
 }
 
 .invoice-print-prefs {
+    position: absolute;
+    top: calc(100% + 0.65rem);
+    left: 50%;
+    right: auto;
+    transform: translateX(-50%);
     display: flex;
     flex-direction: column;
-    gap: 0.38rem;
-    min-width: 320px;
-    max-width: 380px;
+    gap: 0.8rem;
+    width: min(calc(100vw - 2rem), 520px);
     color: #fff;
+    padding: 1rem;
+    border-radius: 1.1rem;
+    background: rgba(17, 17, 19, 0.94);
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    box-shadow: 0 24px 60px rgba(0, 0, 0, 0.34);
+    backdrop-filter: blur(14px);
+}
+
+.invoice-prefs-header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 1rem;
+    padding: 0.1rem 0.1rem 0.2rem;
+}
+
+.invoice-prefs-eyebrow {
+    font-size: 10px;
+    font-weight: 800;
+    text-transform: uppercase;
+    letter-spacing: 0.14em;
+    color: rgba(255, 255, 255, 0.42);
+}
+
+.invoice-prefs-heading {
+    margin-top: 0.18rem;
+    font-size: 18px;
+    line-height: 1.1;
+    font-weight: 900;
+    color: #fff;
+}
+
+.invoice-prefs-section {
+    display: flex;
+    flex-direction: column;
+    gap: 0.7rem;
+    padding: 0.95rem;
+    border-radius: 0.95rem;
+    background: rgba(255, 255, 255, 0.03);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.invoice-prefs-section-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
+}
+
+.invoice-prefs-section-title {
+    font-size: 10px;
+    font-weight: 900;
+    text-transform: uppercase;
+    letter-spacing: 0.14em;
+    color: rgba(255, 255, 255, 0.5);
+}
+
+.invoice-section-toggle {
+    height: 28px;
+    padding: 0 10px;
+    border-radius: 999px;
+    border: 1px solid rgba(255, 255, 255, 0.14);
+    background: rgba(255, 255, 255, 0.06);
+    color: rgba(255, 255, 255, 0.82);
+    font-size: 10px;
+    font-weight: 800;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    white-space: nowrap;
+}
+
+.invoice-prefs-panel-enter-active,
+.invoice-prefs-panel-leave-active {
+    transition: opacity 0.18s ease, transform 0.18s ease;
+    transform-origin: top center;
+}
+
+.invoice-prefs-panel-enter-from,
+.invoice-prefs-panel-leave-to {
+    opacity: 0;
+    transform: translateX(-50%) translateY(-8px) scale(0.98);
+}
+
+.invoice-prefs-panel-enter-to,
+.invoice-prefs-panel-leave-from {
+    transform: translateX(-50%) translateY(0) scale(1);
 }
 
 .invoice-prefs-row {
     display: flex;
     align-items: center;
-    gap: 0.5rem;
+    gap: 0.75rem;
     font-size: 11px;
     font-weight: 700;
-    text-transform: uppercase;
-    letter-spacing: 0.06em;
+    letter-spacing: 0.03em;
 }
 
 .invoice-prefs-row--inline {
+    justify-content: space-between;
+    gap: 0.85rem;
     flex-wrap: wrap;
 }
 
 .invoice-pref-input {
     flex: 1;
-    min-width: 180px;
-    height: 34px;
-    border-radius: 10px;
-    border: 1px solid rgba(255, 255, 255, 0.18);
-    background: rgba(255, 255, 255, 0.14);
+    min-width: 260px;
+    height: 40px;
+    border-radius: 12px;
+    border: 1px solid rgba(255, 255, 255, 0.22);
+    background: rgba(255, 255, 255, 0.12);
     color: #fff;
-    font-size: 12px;
+    font-size: 13px;
     font-weight: 700;
-    padding: 0 10px;
+    padding: 0 12px;
     text-transform: none;
     letter-spacing: normal;
     outline: none;
 }
 
+.invoice-pref-input::placeholder {
+    color: rgba(255, 255, 255, 0.58);
+}
+
+.invoice-pref-input--surface {
+    min-width: 160px;
+    width: 200px;
+    height: 36px;
+    color: rgba(255, 255, 255, 0.96);
+    background: rgba(255, 255, 255, 0.14);
+}
+
 .invoice-check {
     display: inline-flex;
     align-items: center;
-    gap: 0.45rem;
-    font-size: 10px;
+    gap: 0.55rem;
+    font-size: 12px;
+    font-weight: 700;
     cursor: pointer;
 }
 
@@ -700,10 +1172,10 @@ const printInvoice = () => {
 
 .invoice-upload-btn,
 .invoice-clear-btn {
-    height: 30px;
-    border-radius: 8px;
+    height: 34px;
+    border-radius: 10px;
     border: 1px solid rgba(255, 255, 255, 0.2);
-    padding: 0 10px;
+    padding: 0 12px;
     font-size: 10px;
     font-weight: 800;
     text-transform: uppercase;
@@ -712,25 +1184,151 @@ const printInvoice = () => {
     background: rgba(255, 255, 255, 0.14);
     display: inline-flex;
     align-items: center;
+    justify-content: center;
     cursor: pointer;
+}
+
+.invoice-prefs-actions {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin-left: auto;
 }
 
 .invoice-prefs-sliders {
     display: grid;
     grid-template-columns: 1fr;
-    gap: 0.25rem;
+    gap: 0.7rem;
+    padding-top: 0.15rem;
 }
 
 .invoice-prefs-sliders label {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    gap: 0.5rem;
-    font-size: 10px;
+    gap: 0.75rem;
+    font-size: 11px;
+    font-weight: 700;
+    color: rgba(255, 255, 255, 0.88);
 }
 
 .invoice-prefs-sliders input[type="range"] {
     flex: 1;
+}
+
+.invoice-slider {
+    -webkit-appearance: none;
+    appearance: none;
+    height: 4px;
+    border-radius: 999px;
+    background: linear-gradient(90deg, rgba(255, 255, 255, 0.28) 0%, rgba(255, 255, 255, 0.62) 100%);
+    outline: none;
+}
+
+.invoice-slider::-webkit-slider-runnable-track {
+    height: 4px;
+    border-radius: 999px;
+    background: linear-gradient(90deg, rgba(255, 255, 255, 0.24) 0%, rgba(255, 255, 255, 0.58) 100%);
+}
+
+.invoice-slider::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 15px;
+    height: 15px;
+    border-radius: 999px;
+    background: #ffffff;
+    border: 2px solid #111111;
+    box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.08);
+    margin-top: -6px;
+}
+
+.invoice-slider::-moz-range-track {
+    height: 4px;
+    border-radius: 999px;
+    background: linear-gradient(90deg, rgba(255, 255, 255, 0.24) 0%, rgba(255, 255, 255, 0.58) 100%);
+}
+
+.invoice-slider::-moz-range-thumb {
+    width: 15px;
+    height: 15px;
+    border-radius: 999px;
+    background: #ffffff;
+    border: 2px solid #111111;
+    box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.08);
+}
+
+.invoice-signature-slot {
+    height: 48px;
+    margin-bottom: 0.35rem;
+    display: flex;
+    align-items: flex-end;
+    justify-content: center;
+}
+
+.invoice-signature {
+    max-width: 150px;
+    max-height: 46px;
+    object-fit: contain;
+    transform-origin: 50% 100%;
+}
+
+@media (max-width: 900px) {
+    .invoice-actions {
+        width: 100%;
+        justify-content: flex-end;
+        flex-wrap: wrap;
+    }
+
+    .invoice-manager-surface {
+        width: 100%;
+    }
+
+    .invoice-prefs-stack {
+        width: 100%;
+    }
+
+    .invoice-prefs-toggle {
+        width: 100%;
+        justify-content: space-between;
+    }
+
+    .invoice-action-btn {
+        width: 100%;
+        justify-content: center;
+    }
+
+    .invoice-print-prefs {
+        position: static;
+        left: auto;
+        right: auto;
+        transform: none;
+        width: 100%;
+        margin-top: 0.65rem;
+    }
+
+    .invoice-prefs-row {
+        flex-direction: column;
+        align-items: stretch;
+    }
+
+    .invoice-prefs-row--inline {
+        align-items: stretch;
+    }
+
+    .invoice-pref-input {
+        min-width: 0;
+        width: 100%;
+    }
+
+    .invoice-pref-input--surface {
+        width: 100%;
+    }
+
+    .invoice-prefs-actions {
+        width: 100%;
+        margin-left: 0;
+    }
 }
 
 .invoice-sheet {

@@ -138,7 +138,7 @@ const actionBtnClass = `
 const calcTypes = [
     { id: 'all', label: 'Все', short: 'Все' },
     { id: 'laser', label: 'Лазерная резка', short: 'Лазер' },
-    { id: 'dtf', label: 'ДТФ Печать', short: 'ДТФ' },
+    { id: 'dtf', label: 'Нанесение на текстиль', short: 'Текстиль' },
     { id: 'poly', label: 'Цифровая печать', short: 'Цифра' }
 ];
 
@@ -148,6 +148,43 @@ const adaptiveCalcTypes = computed(() => {
         label: windowWidth.value < 640 ? t.short : t.label
     }));
 });
+
+const getHistoryCalcIcon = (type) => {
+    if (type === 'dtf') {
+        return {
+            viewBox: '0 0 24 24',
+            path: 'M20.38 3.4a2 2 0 0 0-1.2-1.2l-3.2-.8a2.5 2.5 0 0 0-3.3 1.5 1 1 0 0 1-1.3 0 2.5 2.5 0 0 0-3.3-1.5l-3.2.8a2 2 0 0 0-1.2 1.2L2 10l4 1V21a1 1 0 0 0 1 1h10a1 1 0 0 0 1-1V11l4-1z',
+        };
+    }
+
+    if (type === 'poly') {
+        return {
+            viewBox: '0 0 24 24',
+            path: 'M6 3h9l3 3v15H6V3zm8 1.5V7h2.5',
+        };
+    }
+
+    return {
+        viewBox: '0 0 24 24',
+        path: 'M13 10V3L4 14h7v7l9-11h-7z',
+    };
+};
+
+const getHistoryCardAccentIcon = (type) => {
+    if (type === 'dtf' || type === 'poly') {
+        return {
+            ...getHistoryCalcIcon(type),
+            filled: true,
+            strokeWidth: null,
+        };
+    }
+
+    return {
+        ...getHistoryCalcIcon(type),
+        filled: false,
+        strokeWidth: '1.5',
+    };
+};
 
 const monthNames = ["Январь", "Февраль", "Март", "Апрель", "Май", "Июнь", "Июль", "Август", "Сентябрь", "Октябрь", "Ноябрь", "Декабрь"];
 const currentMonthYear = computed(() => `${monthNames[calendarDate.value.getMonth()]} ${calendarDate.value.getFullYear()}`);
@@ -680,7 +717,7 @@ onUnmounted(() => {
                                 ]"
                             >
                                 <template v-if="!p.isPlaceholder">
-                                    <div class="absolute -bottom-6 -right-6 text-gray-50 dark:text-[#252525] group-hover:text-gray-100 dark:group-hover:text-[#2A2A2A] transition-all duration-500 group-hover:scale-110 group-hover:-rotate-12 pointer-events-none"><svg width="130" height="130" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z" /></svg></div>
+                                    <div class="absolute -bottom-6 -right-6 text-gray-50 dark:text-[#252525] group-hover:text-gray-100 dark:group-hover:text-[#2A2A2A] transition-all duration-500 group-hover:scale-110 group-hover:-rotate-12 pointer-events-none"><svg width="130" height="130" :viewBox="getHistoryCardAccentIcon(p.type || 'laser').viewBox" :fill="getHistoryCardAccentIcon(p.type || 'laser').filled ? 'currentColor' : 'none'" :stroke="getHistoryCardAccentIcon(p.type || 'laser').filled ? 'none' : 'currentColor'" :stroke-width="getHistoryCardAccentIcon(p.type || 'laser').strokeWidth || undefined"><path stroke-linecap="round" stroke-linejoin="round" :d="getHistoryCardAccentIcon(p.type || 'laser').path" /></svg></div>
                                     
                                     <div v-if="isSelectionMode" class="absolute top-3 right-3 z-30 transition-transform" :class="selectedIds.has(p.id) ? 'scale-110' : 'scale-100'">
                                         <div class="w-[34px] h-[34px] rounded-full border-2 flex items-center justify-center transition-colors shadow-sm"
@@ -690,7 +727,7 @@ onUnmounted(() => {
                                     </div>
                                     <button v-else @click.stop="askToDelete(p, $event)" class="absolute top-3 right-3 p-2 bg-white/80 dark:bg-black/50 backdrop-blur-sm rounded-full text-gray-300 dark:text-gray-600 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 transition-all opacity-0 group-hover:opacity-100 z-20 scale-90 hover:scale-100 shadow-sm border border-gray-100 dark:border-white/5"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg></button>
 
-                                    <div class="relative z-10 mb-3"><div class="inline-flex items-center gap-1.5 px-2 py-1 bg-gray-100/80 dark:bg-white/10 backdrop-blur-md rounded-lg border border-gray-200/50 dark:border-white/5 w-fit"><svg class="w-3 h-3 text-gray-500 dark:text-gray-400" viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="M13 10V3L4 14h7v7l9-11h-7z" /></svg><span class="text-[9px] font-black text-gray-700 dark:text-gray-300 uppercase tracking-wider">{{ (calcTypes.find(t => t.id === (p.type || 'laser')) || calcTypes[1]).label }}</span></div></div>
+                                    <div class="relative z-10 mb-3"><div class="inline-flex items-center gap-1.5 px-2 py-1 bg-gray-100/80 dark:bg-white/10 backdrop-blur-md rounded-lg border border-gray-200/50 dark:border-white/5 w-fit"><svg class="w-3 h-3 text-gray-500 dark:text-gray-400" :viewBox="getHistoryCalcIcon(p.type || 'laser').viewBox" fill="currentColor" stroke="none"><path :d="getHistoryCalcIcon(p.type || 'laser').path" /></svg><span class="text-[9px] font-black text-gray-700 dark:text-gray-300 uppercase tracking-wider">{{ (calcTypes.find(t => t.id === (p.type || 'laser')) || calcTypes[1]).label }}</span></div></div>
                                     <div class="relative z-10 flex-1 flex flex-col items-start pr-6 gap-1">
                                         <h3 class="text-sm md:text-base font-black text-[#1d1d1f] dark:text-white leading-snug break-words">{{ p.name }}</h3>
                                         <span v-if="p.client" class="text-[10px] font-bold text-gray-500 dark:text-gray-400 leading-tight break-words">{{ p.client }}</span>

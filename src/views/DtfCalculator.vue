@@ -29,7 +29,7 @@ const sections = [
   {
     id: 'production',
     title: 'Производство',
-    desc: 'Позже добавим расчёт DTF-ленты, загрузку рулона, режимы печати и распределение по проходам.',
+    desc: 'Позже добавим расчёт рулона, загрузку материала, режимы печати и распределение по проходам.',
     items: ['Ширина рулона', 'Раскладка по длине', 'Расход плёнки', 'Время печати'],
   },
   {
@@ -115,7 +115,7 @@ const onLoginSuccess = () => {
             <div class="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
               <div>
                 <p class="text-[10px] font-bold uppercase tracking-widest text-gray-400 dark:text-gray-500 mb-2">Отдельный калькулятор</p>
-                <h1 class="text-3xl md:text-5xl font-black text-[#1d1d1f] dark:text-white tracking-tighter leading-none">DTF Печать</h1>
+                <h1 class="text-3xl md:text-5xl font-black text-[#1d1d1f] dark:text-white tracking-tighter leading-none">Нанесение на текстиль</h1>
                 <p class="mt-3 max-w-2xl text-sm md:text-base font-medium text-gray-500 dark:text-gray-400 leading-relaxed">
                   Новый контур калькулятора с тем же универсальным каркасом, что и у лазерного модуля. Расчётные блоки и логика будут наращиваться поэтапно.
                 </p>
@@ -191,7 +191,7 @@ const onLoginSuccess = () => {
                   <div v-for="item in activeSection.items" :key="item" class="rounded-2xl border border-gray-100 dark:border-white/10 bg-gray-50 dark:bg-white/5 px-4 py-4">
                     <p class="text-[10px] font-bold uppercase tracking-widest text-gray-400 dark:text-gray-500 mb-2">Скоро здесь</p>
                     <p class="text-lg font-black text-[#1d1d1f] dark:text-white">{{ item }}</p>
-                    <p class="mt-2 text-xs font-medium text-gray-500 dark:text-gray-400 leading-relaxed">Этот параметр будет вынесен в рабочий сценарий DTF-калькулятора отдельным блоком.</p>
+                    <p class="mt-2 text-xs font-medium text-gray-500 dark:text-gray-400 leading-relaxed">Этот параметр будет вынесен в рабочий сценарий калькулятора печати на текстиле отдельным блоком.</p>
                   </div>
                 </div>
               </div>
@@ -199,81 +199,10 @@ const onLoginSuccess = () => {
               <div class="rounded-[2rem] border border-dashed border-gray-200 dark:border-white/10 bg-white/70 dark:bg-white/5 p-6 md:p-7">
                 <p class="text-[10px] font-bold uppercase tracking-widest text-gray-400 dark:text-gray-500 mb-3">Следующий этап</p>
                 <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
-                  <div class="rounded-2xl bg-white dark:bg-[#1C1C1E] border border-gray-100 dark:border-white/10 p-4">
-                    <h3 class="text-base font-black text-[#1d1d1f] dark:text-white">Раскладка на рулоне</h3>
-                    <p class="mt-2 text-xs font-medium text-gray-500 dark:text-gray-400 leading-relaxed">Сетка полос, длина заказа, технологические зазоры.</p>
-                  </div>
-                  <div class="rounded-2xl bg-white dark:bg-[#1C1C1E] border border-gray-100 dark:border-white/10 p-4">
-                    <h3 class="text-base font-black text-[#1d1d1f] dark:text-white">Термопресс</h3>
-                    <p class="mt-2 text-xs font-medium text-gray-500 dark:text-gray-400 leading-relaxed">Температура, выдержка, давление и повторный прогрев.</p>
-                  </div>
-                  <div class="rounded-2xl bg-white dark:bg-[#1C1C1E] border border-gray-100 dark:border-white/10 p-4">
-                    <h3 class="text-base font-black text-[#1d1d1f] dark:text-white">Финальная себестоимость</h3>
-                    <p class="mt-2 text-xs font-medium text-gray-500 dark:text-gray-400 leading-relaxed">Сводный расчёт по плёнке, чернилам, переносу и трудозатратам.</p>
-                  </div>
-                </div>
-              </div>
-            </div>
+                  <script setup>
+                  import DtfApp from '@/components/DtfApp.vue';
+                  </script>
 
-            <div class="space-y-6">
-              <div class="rounded-[2rem] border border-gray-100 dark:border-white/10 bg-white dark:bg-[#1C1C1E] p-6 shadow-sm">
-                <p class="text-[10px] font-bold uppercase tracking-widest text-gray-400 dark:text-gray-500 mb-3">Состояние модуля</p>
-                <div class="space-y-3">
-                  <div class="rounded-2xl bg-gray-50 dark:bg-white/5 p-4">
-                    <div class="flex items-center justify-between gap-3">
-                      <span class="text-sm font-black text-[#1d1d1f] dark:text-white">Каркас калькулятора</span>
-                      <span class="px-2.5 py-1 rounded-full bg-green-100 dark:bg-green-500/15 text-green-700 dark:text-green-300 text-[10px] font-bold uppercase tracking-widest">Готов</span>
-                    </div>
-                    <p class="mt-2 text-xs font-medium text-gray-500 dark:text-gray-400">Маршрут, карточка запуска и базовая навигация уже вынесены в отдельный модуль.</p>
-                  </div>
-                  <div class="rounded-2xl bg-gray-50 dark:bg-white/5 p-4">
-                    <div class="flex items-center justify-between gap-3">
-                      <span class="text-sm font-black text-[#1d1d1f] dark:text-white">Расчётная логика</span>
-                      <span class="px-2.5 py-1 rounded-full bg-amber-100 dark:bg-amber-500/15 text-amber-700 dark:text-amber-300 text-[10px] font-bold uppercase tracking-widest">Дальше</span>
-                    </div>
-                    <p class="mt-2 text-xs font-medium text-gray-500 dark:text-gray-400">Следующим шагом можно переносить реальные сущности заказа и финансовую формулу.</p>
-                  </div>
-                </div>
-              </div>
-
-              <div class="rounded-[2rem] border border-gray-100 dark:border-white/10 bg-gradient-to-br from-[#1d1d1f] to-black dark:from-white dark:to-gray-200 text-white dark:text-black p-6 shadow-xl">
-                <p class="text-[10px] font-bold uppercase tracking-widest text-white/50 dark:text-black/50 mb-2">Настройки DTF</p>
-                <h3 class="text-2xl font-black leading-tight">Отдельный контур уже заведён</h3>
-                <p class="mt-3 text-sm font-medium text-white/70 dark:text-black/70 leading-relaxed">Можно переходить в самостоятельный экран настроек и постепенно переносить туда карточную логику из лазерного модуля.</p>
-                <button
-                  v-if="canViewSettings"
-                  @click="openSettings"
-                  class="mt-5 h-12 px-5 rounded-xl bg-white text-black dark:bg-black dark:text-white font-bold text-sm shadow-lg hover:scale-[1.02] active:scale-95 transition-all"
-                >
-                  Открыть настройки DTF
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
-    </PageScrollWrapper>
-
-    <Teleport to="body">
-      <Transition name="fade">
-        <div v-if="showToast" class="fixed bottom-6 left-1/2 -translate-x-1/2 z-[9999] px-5 py-3 rounded-2xl bg-[#1d1d1f] dark:bg-white text-white dark:text-black text-sm font-bold shadow-2xl">
-          {{ toastMessage }}
-        </div>
-      </Transition>
-    </Teleport>
-
-    <AuthLogin v-if="showAuthModal" @close="showAuthModal = false" @login-success="onLoginSuccess" />
-  </div>
-</template>
-
-<style scoped>
-.fade-enter-active,
-.fade-leave-active {
-  transition: opacity 0.22s ease;
-}
-
-.fade-enter-from,
-.fade-leave-to {
-  opacity: 0;
-}
-</style>
+                  <template>
+                    <DtfApp />
+                  </template>

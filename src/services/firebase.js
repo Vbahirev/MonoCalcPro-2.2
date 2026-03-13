@@ -7,20 +7,32 @@ import {
 } from "firebase/firestore";
 import { getAuth, setPersistence, browserLocalPersistence } from "firebase/auth";
 
+const firebasePublicConfig = {
+  apiKey: "AIzaSyAiNBhigmhy9yHJoOX1taX8-CeXYNu8cGw",
+  authDomain: "monocalc-pro.firebaseapp.com",
+  projectId: "monocalc-pro",
+  storageBucket: "monocalc-pro.firebasestorage.app",
+  messagingSenderId: "604624323020",
+  appId: "1:604624323020:web:c730571e05fec9fb689d69",
+  measurementId: "G-X4ZD366GCQ",
+};
+
 /**
  * Firebase config is loaded from Vite environment variables.
  * IMPORTANT:
- *  - Put real values into .env (NOT committed; see .gitignore)
- *  - Use .env.example as a template for teammates / deployment
+ *  - VITE_* values are client-side build variables, not server secrets
+ *  - This project keeps a committed fallback so it can be restored from the repo alone
+ *  - .env remains available for local overrides and deployment-specific values
  */
 const firebaseConfig = {
-  apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
-  authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN,
-  projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID,
-  storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET,
-  messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID,
-  appId: import.meta.env.VITE_FIREBASE_APP_ID,
-  measurementId: import.meta.env.VITE_FIREBASE_MEASUREMENT_ID,
+  apiKey: import.meta.env.VITE_FIREBASE_API_KEY || firebasePublicConfig.apiKey,
+  authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN || firebasePublicConfig.authDomain,
+  projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID || firebasePublicConfig.projectId,
+  storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET || firebasePublicConfig.storageBucket,
+  messagingSenderId:
+    import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID || firebasePublicConfig.messagingSenderId,
+  appId: import.meta.env.VITE_FIREBASE_APP_ID || firebasePublicConfig.appId,
+  measurementId: import.meta.env.VITE_FIREBASE_MEASUREMENT_ID || firebasePublicConfig.measurementId,
 };
 
 /**
@@ -73,7 +85,7 @@ if (import.meta.env.DEV) {
     console.error(
       "[Firebase] Missing environment variables for:",
       missing.join(", "),
-      "\nCreate .env from .env.example and fill VITE_FIREBASE_* values."
+      "\nCreate .env from .env.example only if you need local overrides."
     );
   }
 }

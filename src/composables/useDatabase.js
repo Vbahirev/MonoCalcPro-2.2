@@ -16,6 +16,13 @@ import {
 import { onAuthStateChanged } from 'firebase/auth';
 
 import { canUser } from '@/core/auth/access';
+import {
+    buildLegacyDtfGarmentPriceMap,
+    normalizeDtfFlexColorMarkups,
+    normalizeDtfFlexMaterials,
+    normalizeDtfGarments,
+    normalizeDtfSublimationFormats,
+} from '@/calculators/dtf/constants';
 import { COATING_PRICING_MODE_DTF_LINEAR, getCoatingPricePerCm2 } from '@/utils/coatingPricing';
 // ── единые модули корзины и ротации мусора ──
 import { moveToTrash as _moveToTrash, addToTrash as _addToTrash, restoreFromTrash as _restoreFromTrash, deleteForever as _deleteForever, listTrashItems as _listTrashItems, TRASH_TTL_DAYS } from '@/composables/useTrash';
@@ -64,6 +71,18 @@ const normalizeGlobalData = (data) => {
 
     nextData.coatings = rawCoatings.filter((item) => !isDtfLinearCoating(item));
     nextData.processing = rawProcessing;
+    if (nextData.settings && typeof nextData.settings === 'object') {
+        const dtfGarments = normalizeDtfGarments(nextData.settings.dtfGarments, nextData.settings.dtfGarmentPrices);
+        nextData.settings = {
+            ...nextData.settings,
+            clientMaterialPrintRiskPercent: Math.max(0, Number(nextData.settings.clientMaterialPrintRiskPercent) || 0),
+            dtfGarments,
+            dtfGarmentPrices: buildLegacyDtfGarmentPriceMap(dtfGarments),
+            dtfFlexColorMarkups: normalizeDtfFlexColorMarkups(nextData.settings.dtfFlexColorMarkups),
+            dtfFlexMaterials: normalizeDtfFlexMaterials(nextData.settings.dtfFlexMaterials),
+            dtfSublimationFormats: normalizeDtfSublimationFormats(nextData.settings.dtfSublimationFormats),
+        };
+    }
     return nextData;
 };
 
@@ -666,6 +685,12 @@ const saveFullDatabase = async () => {
 
         if (canWriteGlobal) {
             payload.settings = settings.value;
+        } else if (canWritePrices) {
+            payload['settings.dtfGarments'] = settings.value?.dtfGarments || [];
+            payload['settings.dtfGarmentPrices'] = settings.value?.dtfGarmentPrices || {};
+            payload['settings.dtfFlexColorMarkups'] = settings.value?.dtfFlexColorMarkups || [];
+            payload['settings.dtfFlexMaterials'] = settings.value?.dtfFlexMaterials || [];
+            payload['settings.dtfSublimationFormats'] = settings.value?.dtfSublimationFormats || [];
         }
 
         if (canWriteMasterPrices) {

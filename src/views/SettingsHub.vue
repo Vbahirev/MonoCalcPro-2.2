@@ -123,8 +123,8 @@ const modules = [
     },
     { 
         id: 'dtf', 
-        name: 'ДТФ Печать', 
-        desc: 'Отдельный контур настроек DTF: пресеты, рулоны, себестоимость и запуск отдельного калькулятора.', 
+        name: 'Нанесение на текстиль', 
+        desc: 'Отдельный контур настроек печати на текстиле: пресеты, рулоны, себестоимость и запуск отдельного калькулятора.', 
         active: true, 
         category: 'textile', 
         iconType: 'shirt', 
@@ -469,7 +469,7 @@ onMounted(() => {
                                     <div class="w-14 h-14 bg-gray-50 dark:bg-white/5 rounded-2xl flex items-center justify-center text-gray-800 dark:text-gray-200 group-hover:bg-black dark:group-hover:bg-white group-hover:text-white dark:group-hover:text-black transition-colors duration-300 shrink-0 shadow-inner">
                                         <svg v-if="mod.iconType === 'laser'" xmlns="http://www.w3.org/2000/svg" class="w-7 h-7" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M13 10V3L4 14h7v7l9-11h-7z" /></svg>
                                         <svg v-if="mod.iconType === 'print'" xmlns="http://www.w3.org/2000/svg" class="w-7 h-7" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M17 17h2a2 2 0 002-2v-4a2 2 0 00-2-2H5a2 2 0 00-2 2v4a2 2 0 002 2h2m2 4h6a2 2 0 002-2v-4a2 2 0 00-2-2H9a2 2 0 00-2 2v4a2 2 0 002 2zm8-12V5a2 2 0 00-2-2H9a2 2 0 00-2 2v4h10z" /></svg>
-                                        <svg v-if="mod.iconType === 'shirt'" xmlns="http://www.w3.org/2000/svg" class="w-7 h-7" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M3 3h2l.4 2M7 13h10l4-8H5.4M7 13L5.4 5M7 13l-2.293 2.293c-.63.63-.184 1.707.707 1.707H17m0 0a2 2 0 100 4 2 2 0 000-4zm-8 2a2 2 0 11-4 0 2 2 0 014 0z" /></svg>
+                                        <svg v-if="mod.iconType === 'shirt'" xmlns="http://www.w3.org/2000/svg" class="w-7 h-7" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M20.38 3.4a2 2 0 0 0-1.2-1.2l-3.2-.8a2.5 2.5 0 0 0-3.3 1.5 1 1 0 0 1-1.3 0 2.5 2.5 0 0 0-3.3-1.5l-3.2.8a2 2 0 0 0-1.2 1.2L2 10l4 1V21a1 1 0 0 0 1 1h10a1 1 0 0 0 1-1V11l4-1z" /></svg>
                                         <svg v-if="mod.iconType === 'trash'" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M19 7l-.867 12.142A2 2 0 0 1 16.138 21H7.862a2 2 0 0 1-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 0 0-1-1h-4a1 1 0 0 0-1 1v3m-4 0h14" /></svg>
                                     </div>
                                     <div class="flex-1 min-w-0 pt-1"><h3 class="text-xl font-black text-gray-900 dark:text-white mb-1.5 leading-tight">{{ mod.name }}</h3><p class="text-xs text-gray-500 dark:text-gray-400 font-medium leading-relaxed">{{ mod.desc }}</p></div>

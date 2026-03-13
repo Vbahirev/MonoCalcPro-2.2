@@ -1020,7 +1020,7 @@ onUnmounted(() => { window.removeEventListener('resize', updateWidth); });
                                                         <div v-else class="col-span-2 rounded-2xl border border-gray-200 dark:border-white/10 bg-white dark:bg-[#232326] px-3 py-3">
                                                             <div class="flex items-start justify-between gap-3">
                                                                 <div>
-                                                                    <p class="text-[10px] font-black uppercase tracking-widest text-gray-900 dark:text-white">DTF Печать</p>
+                                                                    <p class="text-[10px] font-black uppercase tracking-widest text-gray-900 dark:text-white">Нанесение на текстиль</p>
                                                                     <p class="mt-1 text-[11px] font-medium text-gray-500 dark:text-gray-300">Настройка ведётся через закупку за погонный метр и ширину рулона. Цена за см² считается автоматически.</p>
                                                                 </div>
                                                                 <div class="shrink-0 rounded-2xl bg-gray-50 dark:bg-white/5 px-3 py-2 text-right shadow-sm ring-1 ring-gray-200 dark:ring-white/10">

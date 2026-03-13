@@ -1,3 +1,11 @@
+import {
+    buildDefaultDtfFlexColorMarkups,
+    buildDefaultDtfFlexMaterials,
+    buildDefaultDtfGarments,
+    buildDefaultDtfSublimationFormats,
+    buildLegacyDtfGarmentPriceMap,
+} from '@/calculators/dtf/constants';
+
 // Ключи для localStorage
 export const DB_CACHE_KEY = 'monocalc_db_cache_v2'; 
 export const USER_DATA_KEY = 'monocalc_user_project_v2';
@@ -15,4 +23,10 @@ export const defaultSettings = {
     engravingPrice: 0,
     engravingCost100x100mm: 0,
     minimumOrderPrice: 0,
+    clientMaterialPrintRiskPercent: 0,
+    dtfGarments: buildDefaultDtfGarments(),
+    dtfGarmentPrices: buildLegacyDtfGarmentPriceMap(buildDefaultDtfGarments()),
+    dtfFlexColorMarkups: buildDefaultDtfFlexColorMarkups(),
+    dtfFlexMaterials: buildDefaultDtfFlexMaterials(),
+    dtfSublimationFormats: buildDefaultDtfSublimationFormats(),
 };
