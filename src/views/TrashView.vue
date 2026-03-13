@@ -62,6 +62,14 @@ const actionBtnClass = `
   hover:shadow-2xl hover:shadow-black/40 
   active:translate-y-0 active:shadow-xl
 `
+
+const softActionBtnClass = `
+  h-11 px-4 rounded-2xl bg-white dark:bg-[#1C1C1E]
+  border border-gray-200 dark:border-white/10
+  text-gray-700 dark:text-gray-200 font-bold text-xs uppercase tracking-widest
+  hover:bg-gray-50 dark:hover:bg-white/10 transition-colors
+  disabled:opacity-50 disabled:cursor-not-allowed
+`
  
 
 
@@ -1191,24 +1199,25 @@ onMounted(loadTrash)
               {{ filteredStateHint }}
             </p>
 
-            <div class="mt-4 flex flex-col lg:flex-row lg:items-center gap-3 lg:justify-between rounded-3xl bg-[#F5F5F7] dark:bg-white/5 border border-black/5 dark:border-white/10 p-3">
+            <div class="mt-4 rounded-3xl bg-[#F5F5F7] dark:bg-white/5 border border-black/5 dark:border-white/10 p-3 md:p-4">
+              <div class="grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_auto] gap-3 items-start">
               <div class="flex flex-wrap gap-2">
                 <button
-                  class="h-11 px-4 rounded-2xl bg-white dark:bg-[#1C1C1E] border border-gray-200 dark:border-white/10 text-gray-700 dark:text-gray-200 font-bold text-xs uppercase tracking-widest hover:bg-gray-50 dark:hover:bg-white/10 transition-colors"
+                  :class="softActionBtnClass"
                   @click="toggleSelectAllFiltered"
                   :disabled="!filteredItems.length"
                 >
                   {{ areAllFilteredSelected ? 'Снять выделение' : 'Выбрать всё в списке' }}
                 </button>
                 <button
-                  class="h-11 px-4 rounded-2xl bg-white dark:bg-[#1C1C1E] border border-gray-200 dark:border-white/10 text-gray-700 dark:text-gray-200 font-bold text-xs uppercase tracking-widest hover:bg-gray-50 dark:hover:bg-white/10 transition-colors"
+                  :class="softActionBtnClass"
                   @click="clearSelection"
                   :disabled="!hasSelectedItems"
                 >
                   Очистить выбор
                 </button>
                 <button
-                  class="h-11 px-4 rounded-2xl bg-white dark:bg-[#1C1C1E] border border-gray-200 dark:border-white/10 text-gray-700 dark:text-gray-200 font-bold text-xs uppercase tracking-widest hover:bg-gray-50 dark:hover:bg-white/10 transition-colors"
+                  :class="softActionBtnClass"
                   @click="purgeExpiredItems"
                   :disabled="isBulkProcessing"
                 >
@@ -1216,24 +1225,25 @@ onMounted(loadTrash)
                 </button>
               </div>
 
-              <div class="flex flex-wrap gap-2 lg:justify-end">
-                <div class="inline-flex items-center px-4 h-11 rounded-2xl bg-white dark:bg-[#1C1C1E] border border-gray-200 dark:border-white/10 text-xs font-black uppercase tracking-widest text-gray-500 dark:text-gray-400">
+              <div class="flex flex-wrap gap-2 xl:justify-end">
+                <div class="inline-flex items-center px-4 h-11 rounded-2xl bg-white dark:bg-[#1C1C1E] border border-gray-200 dark:border-white/10 text-xs font-black uppercase tracking-widest text-gray-500 dark:text-gray-400 whitespace-nowrap">
                   Выбрано: {{ selectedItems.length }}
                 </div>
                 <button
-                  :class="actionBtnClass"
+                  :class="actionBtnClass + ' min-h-[44px] whitespace-nowrap'"
                   @click="restoreSelectedItems"
                   :disabled="!selectedRestorableItems.length || isBulkProcessing"
                 >
                   Восстановить выбранные
                 </button>
                 <button
-                  class="h-11 px-4 rounded-2xl bg-red-50 dark:bg-red-500/10 text-red-600 dark:text-red-300 font-bold text-xs uppercase tracking-widest border border-red-100 dark:border-red-500/20 hover:bg-red-100 dark:hover:bg-red-500/15 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                  class="h-11 px-4 rounded-2xl bg-red-50 dark:bg-red-500/10 text-red-600 dark:text-red-300 font-bold text-xs uppercase tracking-widest border border-red-100 dark:border-red-500/20 hover:bg-red-100 dark:hover:bg-red-500/15 transition-colors disabled:opacity-50 disabled:cursor-not-allowed whitespace-nowrap"
                   @click="deleteSelectedForever"
                   :disabled="!hasSelectedItems || isBulkProcessing"
                 >
                   Удалить выбранные
                 </button>
+              </div>
               </div>
             </div>
           </div>

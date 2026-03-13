@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, ref, onErrorCaptured } from 'vue';
+import { computed, onMounted, ref, onErrorCaptured, watch } from 'vue';
 import { useTheme } from '@/composables/useTheme';
 import { useDatabase } from '@/composables/useDatabase';
 import { useRegisterSW } from 'virtual:pwa-register/vue';
@@ -11,10 +11,52 @@ const { needRefresh, updateServiceWorker } = useRegisterSW({
   }
 });
 
-const applyPwaUpdate = () => {
-  if (needRefresh.value) {
-    updateServiceWorker(true);
+const isApplyingPwaUpdate = ref(false);
+const isUpdatePromptDismissed = ref(false);
+
+const showUpdatePrompt = computed(() => needRefresh.value && !isUpdatePromptDismissed.value);
+
+watch(needRefresh, (value) => {
+  if (value) isUpdatePromptDismissed.value = false;
+  if (!value) isApplyingPwaUpdate.value = false;
+});
+
+const reloadWithBypass = () => {
+  const nextUrl = new URL(window.location.href);
+  nextUrl.searchParams.set('sw-refresh', String(Date.now()));
+  window.location.replace(nextUrl.toString());
+};
+
+const applyPwaUpdate = async () => {
+  if (isApplyingPwaUpdate.value) return;
+
+  isApplyingPwaUpdate.value = true;
+
+  let fallbackTimer = null;
+  const onControllerChange = () => {
+    if (fallbackTimer) window.clearTimeout(fallbackTimer);
+    reloadWithBypass();
+  };
+
+  try {
+    if (navigator?.serviceWorker) {
+      navigator.serviceWorker.addEventListener('controllerchange', onControllerChange, { once: true });
+    }
+
+    fallbackTimer = window.setTimeout(() => {
+      reloadWithBypass();
+    }, 2500);
+
+    await updateServiceWorker(true);
+  } catch (error) {
+    console.warn('[PWA] SW update failed:', error);
+    reloadWithBypass();
   }
+};
+
+const dismissPwaUpdate = () => {
+  if (isApplyingPwaUpdate.value) return;
+  isUpdatePromptDismissed.value = true;
 };
 
 // Глобальный перехватчик ошибок
@@ -59,28 +101,42 @@ onMounted(() => {
   <!-- PWA Update Prompt -->
   <Transition name="fade-up">
     <div
-      v-if="needRefresh"
-      class="fixed bottom-6 left-1/2 -translate-x-1/2 z-[10000] px-5 py-3 rounded-full bg-[#1d1d1f] dark:bg-white text-white dark:text-black shadow-2xl flex items-center justify-between gap-4 w-[90%] max-w-sm"
+      v-if="showUpdatePrompt"
+      class="fixed bottom-5 right-5 z-[10000] w-[calc(100%-2rem)] max-w-[380px] rounded-[1.75rem] bg-[#1d1d1f] dark:bg-white text-white dark:text-black shadow-2xl border border-white/10 dark:border-black/10 px-4 py-4"
       role="alert"
     >
-      <div class="flex items-center gap-3">
-        <div class="w-8 h-8 rounded-full bg-white/10 dark:bg-black/10 flex items-center justify-center shrink-0">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+      <div class="flex items-start gap-3">
+        <div class="w-9 h-9 rounded-2xl bg-white/10 dark:bg-black/10 flex items-center justify-center shrink-0 mt-0.5">
+          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
             <polyline points="23 4 23 10 17 10"></polyline>
             <polyline points="1 20 1 14 7 14"></polyline>
             <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path>
           </svg>
         </div>
-        <span class="text-xs font-bold leading-tight uppercase tracking-wide">Доступно обновление</span>
-      </div>
-      
-      <div class="flex gap-2 shrink-0">
-        <button @click="needRefresh = false" class="px-3 py-1.5 rounded-full text-[10px] font-bold text-gray-300 dark:text-gray-500 hover:bg-white/10 dark:hover:bg-black/5 transition-colors uppercase">
-          Позже
-        </button>
-        <button @click="applyPwaUpdate" class="px-4 py-1.5 rounded-full text-[10px] font-black bg-white dark:bg-black text-black dark:text-white transition-transform hover:scale-105 active:scale-95 shadow-lg uppercase">
-          Обновить
-        </button>
+
+        <div class="min-w-0 flex-1">
+          <div class="text-[11px] font-black leading-tight uppercase tracking-[0.18em] opacity-75">Доступно обновление</div>
+          <div class="mt-1 text-sm font-bold leading-snug">
+            После нажатия приложение перезагрузится и подтянет свежую сборку.
+          </div>
+
+          <div class="mt-3 flex flex-wrap gap-2">
+            <button
+              @click="dismissPwaUpdate"
+              class="px-4 py-2 rounded-full text-[10px] font-bold text-gray-300 dark:text-gray-600 hover:bg-white/10 dark:hover:bg-black/5 transition-colors uppercase tracking-[0.16em]"
+              :disabled="isApplyingPwaUpdate"
+            >
+              Позже
+            </button>
+            <button
+              @click="applyPwaUpdate"
+              class="px-4 py-2 rounded-full text-[10px] font-black bg-white dark:bg-black text-black dark:text-white transition-transform hover:scale-[1.02] active:scale-[0.98] shadow-lg uppercase tracking-[0.16em] disabled:opacity-70 disabled:cursor-wait"
+              :disabled="isApplyingPwaUpdate"
+            >
+              {{ isApplyingPwaUpdate ? 'Обновляем...' : 'Обновить сейчас' }}
+            </button>
+          </div>
+        </div>
       </div>
     </div>
   </Transition>
